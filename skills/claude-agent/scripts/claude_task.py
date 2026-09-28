@@ -52,15 +52,17 @@ def parse_args():
     parser.add_argument(
         "--workflow",
         action="store_true",
-        help="enable workflows with per-call approval on stdin",
+        help="enable dynamic workflows",
     )
     parser.add_argument(
         "--timeout",
         type=positive_seconds,
         default=900,
-        help="execution seconds, excluding approval waits",
+        help="execution seconds, excluding user-input waits",
     )
-    parser.add_argument("--approval-timeout", type=positive_seconds, default=3600)
+    parser.add_argument(
+        "--input-timeout", "--approval-timeout", type=positive_seconds, default=3600
+    )
     args = parser.parse_args()
     if args.access == "none" and args.allow_command:
         parser.error("--allow-command requires read or edit access")
@@ -70,8 +72,6 @@ def parse_args():
         parser.error(
             "--workflow requires --prompt-file; stdin carries approval decisions"
         )
-    if args.workflow and args.permission_mode == "dontAsk":
-        parser.error("dontAsk cannot handle workflow approvals")
     return args
 
 

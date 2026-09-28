@@ -72,13 +72,18 @@ class AdapterTests(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
-    def start(self, *args, case="success"):
+    def start(self, *args, case="success", workflow_permission="ask", requests=None):
         process = subprocess.Popen(
             [*self.command, *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env={**self.env, "FAKE_SDK_CASE": case},
+            env={
+                **self.env,
+                "FAKE_SDK_CASE": case,
+                "FAKE_WORKFLOW_PERMISSION": workflow_permission,
+                "FAKE_REQUESTS": json.dumps(requests),
+            },
             start_new_session=True,
             bufsize=0,
         )
@@ -117,7 +122,10 @@ class AdapterTests(unittest.TestCase):
         results = [event for event in events if event["type"] == "result"]
         self.assertEqual(len(results), 1, (events, errors.decode()))
         self.assertEqual(
-            sum(event["type"] == "approval_required" for event in events),
+            sum(
+                event["type"] in ("approval_required", "question_required")
+                for event in events
+            ),
             0,
             events,
         )
@@ -214,7 +222,8 @@ class AdapterTests(unittest.TestCase):
             self.start("--access", "none", "--permission-mode", "auto")
         )
         options = json.loads(result["result"])["options"]
-        self.assertEqual(options["tools"], [])
+        self.assertEqual(options["tools"], ["AskUserQuestion"])
+        self.assertNotIn("AskUserQuestion", options["allowed_tools"])
         self.assertEqual(options["permission_mode"], "auto")
 
     def test_errors_are_not_success(self):
@@ -235,7 +244,47 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.finish(self.start())["status"], "history_unwritable")
         self.assertFalse((self.project / "sdk.pid").exists())
 
-    def test_workflow_waits_for_exact_approval_and_final_synthesis(self):
+    def test_native_allowed_workflow_needs_no_adapter_approval(self):
+        for mode in (None, "auto", "dontAsk"):
+            with self.subTest(mode=mode):
+                arguments = ["--permission-mode", mode] if mode else []
+                result = self.finish(
+                    self.start(
+                        "--workflow",
+                        *arguments,
+                        case="workflow",
+                        workflow_permission="allow",
+                    )
+                )
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["result"], "finished")
+                self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
+                options = json.loads((self.project / "sdk-options.json").read_text())
+                self.assertEqual(options["permission_mode"], mode)
+                self.assertEqual(
+                    options["setting_sources"], ["user", "project", "local"]
+                )
+
+    def test_native_denied_workflow_never_launches_or_prompts(self):
+        for permission, mode in (("deny", None), ("deny", "auto"), ("ask", "dontAsk")):
+            with self.subTest(permission=permission, mode=mode):
+                arguments = ["--permission-mode", mode] if mode else []
+                result = self.finish(
+                    self.start(
+                        "--workflow",
+                        *arguments,
+                        case="workflow",
+                        workflow_permission=permission,
+                    )
+                )
+                self.assertEqual(result["status"], "needs_permission")
+                self.assertEqual(result["workflows"], {})
+                self.assertEqual(
+                    result["permission_denials"], [{"tool_name": "Workflow"}]
+                )
+                self.assertFalse((self.project / "approved-0.json").exists())
+
+    def test_native_ask_waits_for_exact_approval_and_final_synthesis(self):
         process = self.start("--workflow", case="workflow")
         event = self.next_event(process, "approval_required")
         self.assertFalse((self.project / "approved-0.json").exists())
@@ -249,6 +298,13 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"], "finished")
         self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
+
+    def test_native_ask_in_auto_mode_still_waits(self):
+        process = self.start("--workflow", "--permission-mode", "auto", case="workflow")
+        event = self.next_event(process, "approval_required")
+        self.assertFalse((self.project / "approved-0.json").exists())
+        self.decision(process, event)
+        self.assertEqual(self.finish(process)["status"], "completed")
 
     def test_workflow_denial_never_launches(self):
         process = self.start("--workflow", case="workflow")
@@ -306,7 +362,7 @@ class AdapterTests(unittest.TestCase):
         result = self.finish(process)
         self.assertEqual(result["status"], "timed_out")
         self.assertEqual(
-            result["permission_denials"][0]["reason"], "Approval wait expired."
+            result["permission_denials"][0]["reason"], "User input wait expired."
         )
         self.assertFalse((self.project / "approved-0.json").exists())
 
@@ -375,6 +431,186 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             self.finish(self.start("--workflow"))["status"], "workflow_not_started"
         )
+
+    def question(self):
+        return {
+            "name": "AskUserQuestion",
+            "input": {
+                "questions": [
+                    {
+                        "question": "Which format?",
+                        "header": "Format",
+                        "options": [{"label": "Text"}, {"label": "JSON"}],
+                        "multiSelect": False,
+                    },
+                    {
+                        "question": "Which sections?",
+                        "header": "Sections",
+                        "options": [{"label": "Summary"}, {"label": "Details"}],
+                        "multiSelect": True,
+                    },
+                ],
+            },
+        }
+
+    def reply(self, process, event, **fields):
+        message = {
+            "type": "answer",
+            "request_id": event["request_id"],
+            "input_sha256": event["input_sha256"],
+            **fields,
+        }
+        process.stdin.write((json.dumps(message) + "\n").encode())
+        process.stdin.flush()
+
+    def handled(self, index):
+        return json.loads((self.project / f"handled-{index}.json").read_text())
+
+    def test_native_tool_requests_are_relayed_without_workflow(self):
+        requests = [
+            {
+                "name": "Read",
+                "input": {"file_path": "data.txt", "scriptPath": "literal"},
+            },
+            {"name": "Write", "input": {"file_path": "result.txt", "content": "value"}},
+            {"name": "Bash", "input": {"command": "git diff --stat"}},
+            {"name": "mcp__example__lookup", "input": {"id": "item-1"}},
+        ]
+        process = self.start(
+            "--access",
+            "edit",
+            "--allow-command",
+            "git diff *",
+            case="interaction",
+            requests=requests,
+        )
+        for index, request in enumerate(requests):
+            event = self.next_event(process, "approval_required")
+            self.assertEqual(event["tool_name"], request["name"])
+            self.assertEqual(event["tool_use_id"], f"call-{index}")
+            self.assertEqual(event["tool_input"], request["input"])
+            self.decision(process, event, updated_input={"injected": True})
+        self.assertEqual(self.finish(process)["status"], "completed")
+        for index, request in enumerate(requests):
+            self.assertEqual(self.handled(index)["updated_input"], request["input"])
+
+    def test_tool_denial_does_not_close_other_requests(self):
+        request = {"name": "Read", "input": {"file_path": "data.txt"}}
+        process = self.start(case="interaction", requests=[request, request])
+        first = self.next_event(process, "approval_required")
+        self.decision(process, first, "deny", message="Use the public copy instead")
+        second = self.next_event(process, "approval_required")
+        self.assertNotEqual(first["request_id"], second["request_id"])
+        self.decision(process, first)
+        self.next_event(process, "control_error")
+        self.decision(process, second)
+        self.assertEqual(self.finish(process)["status"], "needs_permission")
+        self.assertEqual(self.handled(0)["behavior"], "deny")
+        self.assertEqual(self.handled(0)["message"], "Use the public copy instead")
+        self.assertEqual(self.handled(1)["behavior"], "allow")
+
+    def test_questions_preserve_input_and_accept_free_text_and_multi_select(self):
+        request = self.question()
+        answers = {
+            "Which format?": "Custom Markdown",
+            "Which sections?": ["Summary", "Details"],
+        }
+        process = self.start("--access", "none", case="interaction", requests=[request])
+        event = self.next_event(process, "question_required")
+        self.assertEqual(event["tool_name"], "AskUserQuestion")
+        self.assertEqual(event["tool_input"], request["input"])
+        self.reply(
+            process, event, answers=answers, questions=[{"question": "injected"}]
+        )
+        self.assertEqual(self.finish(process)["status"], "completed")
+        self.assertEqual(
+            self.handled(0)["updated_input"], {**request["input"], "answers": answers}
+        )
+
+    def test_questions_accept_general_response(self):
+        request = self.question()
+        process = self.start(case="interaction", requests=[request])
+        event = self.next_event(process, "question_required")
+        self.reply(process, event, response="Use the existing format")
+        self.assertEqual(self.finish(process)["status"], "completed")
+        self.assertEqual(
+            self.handled(0)["updated_input"],
+            {**request["input"], "response": "Use the existing format"},
+        )
+
+    def test_invalid_question_replies_leave_request_waiting(self):
+        process = self.start(case="interaction", requests=[self.question()])
+        event = self.next_event(process, "question_required")
+        valid = {"Which format?": "JSON", "Which sections?": "Summary, Details"}
+        invalid = [
+            {"request_id": "wrong", "answers": valid},
+            {"input_sha256": "wrong", "answers": valid},
+            {"type": "approval", "decision": "approve"},
+            {},
+            {"answers": {"Which format?": "JSON"}},
+            {"answers": {**valid, "extra": "answer"}},
+            {"answers": {**valid, "Which format?": ["JSON"]}},
+            {"answers": {**valid, "Which sections?": []}},
+            {"answers": {**valid, "Which sections?": [True]}},
+            {"response": " "},
+            {"response": "general", "answers": valid},
+        ]
+        for fields in invalid:
+            with self.subTest(fields=fields):
+                self.reply(process, event, **fields)
+                self.next_event(process, "control_error")
+                self.assertFalse((self.project / "handled-0.json").exists())
+        self.reply(process, event, answers=valid)
+        self.assertEqual(self.finish(process)["status"], "completed")
+
+    def test_skipping_question_keeps_channel_open(self):
+        request = self.question()
+        process = self.start(case="interaction", requests=[request, request])
+        first = self.next_event(process, "question_required")
+        self.reply(process, first, decision="skip")
+        second = self.next_event(process, "question_required")
+        self.reply(process, second, response="Use the defaults")
+        self.assertEqual(self.finish(process)["status"], "needs_permission")
+        self.assertEqual(self.handled(0)["behavior"], "deny")
+        self.assertEqual(self.handled(1)["behavior"], "allow")
+
+    def test_questions_and_permissions_share_one_channel(self):
+        requests = [
+            self.question(),
+            {"name": "Read", "input": {"file_path": "data.txt"}},
+        ]
+        process = self.start(case="interaction", requests=requests)
+        question = self.next_event(process, "question_required")
+        self.reply(process, question, response="Read the current data")
+        permission = self.next_event(process, "approval_required")
+        self.reply(process, question, response="Read the current data")
+        self.next_event(process, "control_error")
+        self.decision(process, permission)
+        self.assertEqual(self.finish(process)["status"], "completed")
+
+    def test_input_channel_closure_and_timeout_reject_later_requests(self):
+        for request, event_type in (
+            (self.question(), "question_required"),
+            ({"name": "Read", "input": {"file_path": "data.txt"}}, "approval_required"),
+        ):
+            for ending in ("eof", "timeout"):
+                with self.subTest(tool=request["name"], ending=ending):
+                    process = self.start(
+                        "--input-timeout",
+                        "0.2",
+                        case="interaction",
+                        requests=[request, request],
+                    )
+                    self.next_event(process, event_type)
+                    if ending == "timeout":
+                        process.wait(timeout=3)
+                    result = self.finish(process)
+                    self.assertEqual(
+                        result["status"],
+                        "timed_out" if ending == "timeout" else "denied",
+                    )
+                    self.assertEqual(self.handled(0)["behavior"], "deny")
+                    self.assertEqual(self.handled(1)["behavior"], "deny")
 
     def test_parent_signals_stop_sdk_and_claude(self):
         for signum in [signal.SIGTERM, signal.SIGHUP, signal.SIGKILL]:

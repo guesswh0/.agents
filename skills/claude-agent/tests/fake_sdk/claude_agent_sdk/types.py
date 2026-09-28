@@ -5,10 +5,6 @@ class ClaudeAgentOptions(SimpleNamespace):
     pass
 
 
-class HookMatcher(SimpleNamespace):
-    pass
-
-
 class PermissionResultAllow(SimpleNamespace):
     behavior = "allow"
 

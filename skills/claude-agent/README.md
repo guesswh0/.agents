@@ -68,10 +68,14 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | `--access` | Built-in tool profile: `none`, `read`, or `edit`. Defaults to `read`. |
 | `--allow-command` | Additional Bash permission rule. Repeatable; for example, `--allow-command 'git diff *'`. |
 | `--resume` | UUID of an existing Claude session. |
-| `--timeout` | Execution timeout in seconds, excluding approval waits. Defaults to 900. |
-| `--approval-timeout` | Timeout for one approval request. Defaults to 3600 seconds. |
+| `--timeout` | Execution timeout in seconds, excluding user-input waits. Defaults to 900. |
+| `--input-timeout` | Timeout for one user response. Defaults to 3600. Alias: `--approval-timeout`. |
 
-`read` includes Read, Glob, and Grep. `edit` also includes Edit and Write. These profiles select built-in tools; they are not a filesystem sandbox. Claude's native settings, hooks, connectors, and permission rules remain active.
+`read` includes Read, Glob, and Grep. `edit` also includes Edit and Write. All profiles include AskUserQuestion. These profiles are not a filesystem sandbox. Claude's native settings, hooks, connectors, and permission rules remain active.
+
+### Permissions and questions
+
+Use a prompt file and keep stdin open (`tty: true` in Codex). Tool permissions follow Claude's native settings. The adapter relays requests as `approval_required` and clarifying questions as `question_required`. See [User input](references/input.md) for the response format.
 
 ### Continue a session
 
@@ -98,11 +102,7 @@ python3 "$skill_root/scripts/claude_task.py" \
   --prompt-file ./work/workflow-task.txt
 ```
 
-Keep the process's stdin open: approval decisions arrive through it. In Codex, launch the adapter with `tty: true`. Workflow mode requires a prompt file because stdin carries the control protocol.
-
-When Claude prepares a script, the adapter emits `approval_required` with the exact workflow input, request ID, and input hash. The Workflow call stays suspended until a matching decision arrives. Saved Claude rules, including `ask: ["Workflow"]`, are not changed.
-
-See [references/workflows.md](references/workflows.md) for the decision format, event sequence, and continuation rules.
+See [Dynamic workflows](references/workflows.md) for progress events and completion rules. Permissions and questions use the same input channel as individual tasks.
 
 ## Results and interruption
 
@@ -123,7 +123,7 @@ Permission denial reasons appear in `permission_denials`. An error message, when
 
 Omitted model and effort overrides appear as `null` in the request metadata. This does not report Claude's resolved defaults; use `models` for the actual models used.
 
-A refusal, EOF, or approval timeout closes approvals for the current invocation. Later and already queued requests are denied immediately. See the workflow reference for details.
+A workflow refusal, EOF, or input timeout closes the input channel for the current invocation. See [User input](references/input.md) for details.
 
 On cancellation, timeout, or loss of the calling process, the supervisor stops the worker process group. After an interrupted call, a returned `session_id` alone does not guarantee complete history; inspect the result and project changes before resuming.
 

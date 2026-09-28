@@ -1,6 +1,6 @@
 ---
 name: claude-agent
-description: Delegate a task to Claude Code, get a second opinion, continue a Claude session, or run a dynamic workflow with approval and progress reporting through the local SDK adapter.
+description: "Use Claude Code as a second agent: delegate tasks, get an independent opinion, continue an existing session, or run a dynamic multi-agent workflow."
 ---
 
 # Claude Agent
@@ -22,9 +22,11 @@ python3 /absolute/path/to/claude-agent/scripts/claude_task.py \
 
 `--model` and `--effort` are independent optional overrides. Omitted values use Claude Code's native defaults.
 
-`--access none`, `read`, and `edit` select built-in tools; shell access uses repeatable `--allow-command` rules such as `--allow-command 'git diff *'`. These profiles are not a filesystem sandbox: native hooks, connectors, and permission rules remain active. Claude's configured permission mode is used unless `--permission-mode` is supplied.
+Keep stdin open (`exec_command` with `tty: true` in Codex). On `approval_required` or `question_required`, follow [User input](references/input.md) to relay the request and return the user's response.
 
-For a dynamic workflow, read [references/workflows.md](references/workflows.md) before starting. This branch adds an approval channel and keeps the process open while the user decides.
+`--access none`, `read`, and `edit` select file tools; all profiles include `AskUserQuestion`. Shell access uses repeatable `--allow-command` rules such as `--allow-command 'git diff *'`. These profiles are not a filesystem sandbox: native hooks, connectors, and permission rules remain active. Claude's configured permission mode is used unless `--permission-mode` is supplied.
+
+For a dynamic workflow, read [references/workflows.md](references/workflows.md) before starting.
 
 ## Read the result or continue
 
@@ -32,7 +34,7 @@ Output is newline-delimited JSON. Read until the single final `type: result` eve
 
 Keep `session_id`, `cwd`, any explicit model/effort overrides, and a brief task summary in this chat and any context handoff. Continue with the same directory and `--resume SESSION_ID`; calls to one session must be sequential. Separate sessions can handle independent tasks. The final `models` field reports the actual models used.
 
-`needs_permission` reports an unresolved tool request; `denied` reports a declined workflow. For cancellation, timeout, or an ambiguous failure, inspect project changes before resuming. A returned ID on a failed call does not prove the history was saved.
+`needs_permission` reports denied tool requests; `denied` reports a declined workflow or closed input channel. For cancellation, timeout, or an ambiguous failure, inspect project changes before resuming. A returned ID on a failed call does not prove the history was saved.
 
 ## Runtime
 
@@ -40,4 +42,4 @@ The adapter requires Python 3.11+ and the installed Claude CLI. It automatically
 
 Claude needs write access to its own history directory. The preflight checks this before contacting the model. If the host sandbox blocks that write, use the host's normal permission mechanism for the invocation. Claude's selected tool access stays unchanged.
 
-`--timeout` defaults to 900 execution seconds. Approval waits are excluded. The process supervisor stops the SDK worker and its process group on timeout, cancellation, or loss of the calling process. It runs only for the duration of this invocation.
+`--timeout` defaults to 900 execution seconds. User-input waits are excluded. The process supervisor stops the SDK worker and its process group on timeout, cancellation, or loss of the calling process. It runs only for the duration of this invocation.

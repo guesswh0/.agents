@@ -5,7 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .types import ClaudeAgentOptions as ClaudeAgentOptions
-from .types import ResultMessage, TaskStartedMessage, TaskNotificationMessage
+from .types import (
+    PermissionResultAllow,
+    ResultMessage,
+    TaskStartedMessage,
+    TaskNotificationMessage,
+)
 
 
 async def query(prompt, options):
@@ -30,6 +35,29 @@ async def query(prompt, options):
         ]
     }
     (cwd / "sdk-options.json").write_text(json.dumps(selected))
+    assert not getattr(options, "hooks", None)
+    if case == "interaction":
+        for index, request in enumerate(json.loads(os.environ["FAKE_REQUESTS"])):
+            name = request["name"]
+            assert name in options.tools or name.startswith("mcp__")
+            if name == "AskUserQuestion":
+                assert name not in options.allowed_tools
+            decision = await options.can_use_tool(
+                name,
+                request["input"],
+                SimpleNamespace(tool_use_id=f"call-{index}", title=f"Request {index}"),
+            )
+            (cwd / f"handled-{index}.json").write_text(
+                json.dumps(
+                    {
+                        "behavior": decision.behavior,
+                        "updated_input": getattr(decision, "updated_input", None),
+                        "message": getattr(decision, "message", None),
+                    }
+                )
+            )
+        yield ResultMessage(session_id=session, result="requests resolved")
+        return
     if case == "stubborn":
         child = await asyncio.create_subprocess_exec(options.cli_path, cwd=cwd)
         try:
@@ -39,19 +67,35 @@ async def query(prompt, options):
             child.kill()
             await child.wait()
     if case.startswith("workflow"):
-        hook = options.hooks["PreToolUse"][0].hooks[0]
-        gate = await hook({"tool_name": "Workflow"}, "call-1", {})
-        assert gate["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "Workflow" in options.tools
+        assert "Workflow" not in options.allowed_tools
+        permission = os.environ.get("FAKE_WORKFLOW_PERMISSION", "allow")
+        if permission == "deny" or (
+            permission == "ask" and options.permission_mode == "dontAsk"
+        ):
+            yield ResultMessage(
+                session_id=session,
+                result="not launched",
+                permission_denials=[{"tool_name": "Workflow"}],
+            )
+            return
+
+        async def request(index, data):
+            if permission == "allow":
+                return PermissionResultAllow(updated_input=data)
+            return await options.can_use_tool(
+                "Workflow",
+                data,
+                SimpleNamespace(
+                    tool_use_id=f"call-{index}", title="Review test workflow"
+                ),
+            )
+
         if case == "workflow_concurrent":
-
-            async def request(index):
-                return await options.can_use_tool(
-                    "Workflow",
-                    {"script": f"return {index}"},
-                    SimpleNamespace(tool_use_id=f"call-{index}"),
-                )
-
-            requests = [asyncio.create_task(request(index)) for index in range(2)]
+            requests = [
+                asyncio.create_task(request(index, {"script": f"return {index}"}))
+                for index in range(2)
+            ]
             await asyncio.sleep(0)
             (cwd / "concurrent-ready").touch()
             decisions = await asyncio.gather(*requests)
@@ -68,13 +112,7 @@ async def query(prompt, options):
             }
             if case == "workflow_file":
                 data = {"scriptPath": str(cwd / "workflow.js")}
-            decision = await options.can_use_tool(
-                "Workflow",
-                data,
-                SimpleNamespace(
-                    tool_use_id=f"call-{index}", title="Review test workflow"
-                ),
-            )
+            decision = await request(index, data)
             if decision.behavior != "allow":
                 if case == "workflow_retry":
                     continue

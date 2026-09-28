@@ -83,32 +83,60 @@ class Approvals:
         self.denials = []
         self.ending = None
 
-    async def require_review(self, data, tool_use_id, context):
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask" if self.job["workflow"] else "deny",
-                "permissionDecisionReason": "Review this workflow through the host approval channel.",
-            }
-        }
-
-    def snapshot(self, data):
+    def snapshot(self, name, data):
         snapshot = json.loads(json.dumps(data))
-        source = snapshot.pop("scriptPath", None)
-        if source and not snapshot.get("script"):
-            path = Path(source).expanduser()
-            if not path.is_absolute():
-                path = Path(self.job["cwd"]) / path
-            snapshot["script"] = path.read_text(encoding="utf-8")
-        if (
-            not isinstance(snapshot.get("script"), str)
-            or not snapshot["script"].strip()
-        ):
-            raise ValueError("Workflow supplied no script")
+        if name == "Workflow":
+            source = snapshot.pop("scriptPath", None)
+            if source and not snapshot.get("script"):
+                path = Path(source).expanduser()
+                if not path.is_absolute():
+                    path = Path(self.job["cwd"]) / path
+                snapshot["script"] = path.read_text(encoding="utf-8")
+            if (
+                not isinstance(snapshot.get("script"), str)
+                or not snapshot["script"].strip()
+            ):
+                raise ValueError("Workflow supplied no script")
         digest = hashlib.sha256(
             json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
         return snapshot, digest
+
+    def answer(self, snapshot, reply):
+        updated = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in ("answers", "response")
+        }
+        if "response" in reply:
+            response = reply["response"]
+            if (
+                "answers" in reply
+                or not isinstance(response, str)
+                or not response.strip()
+            ):
+                raise ValueError("Provide either answers or a non-empty response")
+            return {**updated, "response": response}
+        questions = snapshot.get("questions", [])
+        answers = reply.get("answers")
+        if (
+            not questions
+            or not isinstance(answers, dict)
+            or set(answers) != {q["question"] for q in questions}
+        ):
+            raise ValueError("Answers must match every question")
+        for question in questions:
+            value = answers[question["question"]]
+            values = (
+                value
+                if isinstance(value, list) and question.get("multiSelect")
+                else [value]
+            )
+            if not values or any(
+                not isinstance(item, str) or not item.strip() for item in values
+            ):
+                raise ValueError("Each answer must contain non-empty text")
+        return {**updated, "answers": answers}
 
     def deny(self, name, context, reason):
         self.denials.append(
@@ -127,17 +155,12 @@ class Approvals:
     async def decide(self, name, data, context):
         if self.ending:
             return self.deny(name, context, self.ending[1])
-        if name != "Workflow" or not self.job["workflow"]:
-            return self.deny(
-                name,
-                context,
-                "This tool request needs permission outside the workflow approval channel.",
-            )
+        question = name == "AskUserQuestion"
         async with self.lock:
             if self.ending:
                 return self.deny(name, context, self.ending[1])
             try:
-                snapshot, digest = self.snapshot(data)
+                snapshot, digest = self.snapshot(name, data)
             except (OSError, ValueError, UnicodeError) as exc:
                 return self.deny(name, context, str(exc))
             request_id = str(uuid.uuid4())
@@ -146,14 +169,16 @@ class Approvals:
             self.clock.pause()
             emit(
                 self.job["base"],
-                "approval_required",
+                "question_required" if question else "approval_required",
                 request_id=request_id,
                 input_sha256=digest,
-                title=getattr(context, "title", None) or "Review dynamic workflow",
+                tool_name=name,
+                tool_use_id=getattr(context, "tool_use_id", None),
+                title=getattr(context, "title", None) or name,
                 tool_input=snapshot,
             )
             try:
-                async with asyncio.timeout(self.job["approval_timeout"]):
+                async with asyncio.timeout(self.job["input_timeout"]):
                     while True:
                         line = await self.input.read()
                         if line is None:
@@ -161,47 +186,63 @@ class Approvals:
                                 name,
                                 context,
                                 "denied",
-                                "Approval input closed before a decision.",
+                                "User input closed before a response.",
                             )
                         try:
                             decision = json.loads(line)
                             matches = (
                                 isinstance(decision, dict)
-                                and decision.get("type") == "approval"
+                                and decision.get("type")
+                                == ("answer" if question else "approval")
                                 and decision.get("request_id") == request_id
                                 and decision.get("input_sha256") == digest
                             )
                         except (ValueError, UnicodeError):
                             matches = False
-                        if not matches or decision.get("decision") not in (
-                            "approve",
-                            "deny",
-                        ):
+                        choices = (None, "skip") if question else ("approve", "deny")
+                        if not matches or decision.get("decision") not in choices:
                             emit(
                                 self.job["base"],
                                 "control_error",
-                                error="Decision must match the pending request ID and input hash.",
+                                error="Response must match the pending request type, ID, and input hash.",
                             )
                             continue
-                        if decision["decision"] == "deny":
-                            return self.end(
-                                name,
-                                context,
-                                "denied",
-                                "The user declined this workflow.",
+                        if decision.get("decision") in ("deny", "skip"):
+                            reason = (
+                                decision.get("message")
+                                or "The user declined this request."
                             )
+                            if not isinstance(reason, str):
+                                emit(
+                                    self.job["base"],
+                                    "control_error",
+                                    error="Message must be text",
+                                )
+                                continue
+                            if name == "Workflow":
+                                return self.end(name, context, "denied", reason)
+                            return self.deny(name, context, reason)
+                        try:
+                            updated = (
+                                self.answer(snapshot, decision)
+                                if question
+                                else snapshot
+                            )
+                        except (KeyError, TypeError, ValueError) as exc:
+                            emit(self.job["base"], "control_error", error=str(exc))
+                            continue
                         emit(
                             self.job["base"],
-                            "approval_accepted",
+                            "answer_accepted" if question else "approval_accepted",
                             request_id=request_id,
                             input_sha256=digest,
                         )
-                        return self.sdk.PermissionResultAllow(updated_input=snapshot)
+                        return self.sdk.PermissionResultAllow(updated_input=updated)
             except TimeoutError:
-                return self.end(name, context, "timed_out", "Approval wait expired.")
+                return self.end(name, context, "timed_out", "User input wait expired.")
             except (OSError, ValueError) as exc:
-                return self.deny(
-                    name, context, "Approval input unavailable: " + str(exc)
+                return self.end(
+                    name, context, "denied", "User input unavailable: " + str(exc)
                 )
             finally:
                 self.clock.resume()
@@ -322,6 +363,7 @@ async def run(job, sdk):
     results = Results(job, sdk)
     tools = list(ACCESS_TOOLS[job["access"]])
     allowed = list(tools)
+    tools.append("AskUserQuestion")
     if job["allow_command"]:
         tools.append("Bash")
         allowed.extend("Bash(" + rule + ")" for rule in job["allow_command"])
@@ -341,11 +383,6 @@ async def run(job, sdk):
         permission_mode=job["permission_mode"],
         env=job["claude_env"],
         can_use_tool=approvals.decide,
-        hooks={
-            "PreToolUse": [
-                sdk.HookMatcher(matcher="Workflow", hooks=[approvals.require_review])
-            ]
-        },
     )
 
     async def consume():
@@ -398,14 +435,13 @@ def main():
         for name in (
             "PermissionResultAllow",
             "PermissionResultDeny",
-            "HookMatcher",
             "ResultMessage",
             "TaskStartedMessage",
             "TaskNotificationMessage",
             "TaskProgressMessage",
         ):
             setattr(sdk, name, getattr(types, name))
-        # file tools are deliberately approved before the workflow callback
+        # file tools are deliberately approved before the permission callback
         warning = getattr(types, "CanUseToolShadowedWarning", None)
         if warning:
             warnings.filterwarnings("ignore", category=warning)
