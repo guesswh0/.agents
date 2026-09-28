@@ -22,29 +22,24 @@ two independent reviewers, followed by verification of their findings.
 
 [SKILL.md](SKILL.md) contains the instructions for Codex. Tasks use the current project directory unless another location is specified. Claude loads its native project and global `CLAUDE.md` instructions, including symlinks to `AGENTS.md`; these files do not need to be copied into the prompt.
 
-## Install from dotfiles
+## Installation
 
 Requires Python 3.11+, `claude` on `PATH`, and working Claude Code CLI authentication.
 
 ```sh
-skill_root="$HOME/.dotfiles/.agents/skills/claude-agent"
+skill_root="$HOME/.agents/skills/claude-agent"
 python3 "$skill_root/scripts/install_runtime.py"
 ```
 
-The installer creates `.venv` beside the skill and installs the dependencies pinned in [requirements.txt](scripts/requirements.txt). After cloning dotfiles on another machine, create the runtime again: `.venv` and caches are excluded from Git.
+The installer creates `.venv` beside the skill and installs the dependencies pinned in [requirements.txt](scripts/requirements.txt). After cloning this repository on another machine or moving it, create the runtime again: `.venv` and caches are excluded from Git.
 
-In this setup, Codex discovers the skill through this symlink:
+Codex discovers the skill directly at:
 
 ```text
-~/.codex/skills/claude-agent -> ~/.dotfiles/.agents/skills/claude-agent
+~/.agents/skills/claude-agent
 ```
 
-On a new machine where the link does not exist yet:
-
-```sh
-mkdir -p "$HOME/.codex/skills"
-ln -s "$skill_root" "$HOME/.codex/skills/claude-agent"
-```
+Run the repository's `setup.sh` to connect the shared instructions to Codex and Claude Code. This skill is used by Codex, so setup does not link it into Claude Code's own skills.
 
 Individual scripts do not need registration. `SKILL.md` is the skill entry point, and supporting files live in the same directory tree. This setup does not require a `config.toml` entry.
 
