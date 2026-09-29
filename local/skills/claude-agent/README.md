@@ -40,6 +40,7 @@ Codex discovers the skill directly at:
 ```
 
 Run the repository's `setup.sh` to connect the shared instructions to Codex and Claude Code. This skill is used by Codex, so setup does not link it into Claude Code's own skills.
+The source lives in `local/skills/claude-agent`; the installed directory is a symlink, so edits apply immediately.
 
 Individual scripts do not need registration. `SKILL.md` is the skill entry point, and supporting files live in the same directory tree. This setup does not require a `config.toml` entry.
 
@@ -158,7 +159,7 @@ Tests use a fake SDK and CLI without contacting a model:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
-  -s "$skill_root/tests" -v
+  -s local/skills/claude-agent/tests -v
 ```
 
 ## Troubleshooting

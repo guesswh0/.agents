@@ -3,5 +3,6 @@ __pycache__/
 .ruff_cache/
 *.backup.*
 /.skill-lock.json*
-/skills/*
-!/skills/claude-agent/
+/skills/
+/runtime/
+/backups/

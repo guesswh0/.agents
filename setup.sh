@@ -20,10 +20,14 @@ fi
 target_home=$(cd -- "$target_home" && pwd -P)
 
 link() {
+    # keep correct links unchanged on repeated runs
     [ "$1" -ef "$2" ] && return
     mkdir -p -- "$(dirname -- "$2")"
     if [ -e "$2" ] || [ -L "$2" ]; then
-        mv -- "$2" "$2.backup.$(date +%Y%m%d%H%M%S).$$"
+        # keep backups outside skill discovery
+        mkdir -p -- "$target_home/.agents/backups"
+        backup_dir=$(mktemp -d "$target_home/.agents/backups/$(basename -- "$2").XXXXXX")
+        mv -- "$2" "$backup_dir/original"
     fi
     ln -sv -- "$1" "$2"
 }
@@ -31,13 +35,16 @@ link() {
 link "$repo_dir/AGENTS.md" "$target_home/.codex/AGENTS.md"
 link "$repo_dir/AGENTS.md" "$target_home/.claude/CLAUDE.md"
 
-while IFS= read -r -d '' manifest; do
+# native harness tools manage skills outside local/skills
+for manifest in "$repo_dir"/local/skills/*/SKILL.md; do
+    [ -f "$manifest" ] || continue
     skill=${manifest%/SKILL.md}
     name=${skill##*/}
-    link "$repo_dir/$skill" "$target_home/.agents/skills/$name"
+    link "$skill" "$target_home/.agents/skills/$name"
+    # this adapter delegates from codex to claude
     if [ "$name" != claude-agent ]; then
-        link "$repo_dir/$skill" "$target_home/.claude/skills/$name"
+        link "$skill" "$target_home/.claude/skills/$name"
     fi
-done < <(git -C "$repo_dir" ls-files -z -- 'skills/*/SKILL.md')
+done
 
 printf '\nAgent configuration installed.\n'

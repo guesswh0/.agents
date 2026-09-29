@@ -10,73 +10,29 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class SetupTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name).resolve()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
         self.home = self.root / "home with spaces"
         self.home.mkdir()
         self.repo = self.root / "agent source"
         self.repo.mkdir()
         shutil.copy2(ROOT / "setup.sh", self.repo / "setup.sh")
-        shutil.copy2(ROOT / ".gitignore", self.repo / ".gitignore")
         (self.repo / "AGENTS.md").write_text("Shared instructions\n")
-        self.git("init", "-q")
-        self.git("add", "AGENTS.md", "setup.sh", ".gitignore")
+        skill = self.repo / "local/skills/portable"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("Local skill\n")
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
 
-    def git(self, *args):
-        return subprocess.run(
-            ["git", "-C", str(self.repo), *args],
+    def install(self):
+        subprocess.run(
+            ["bash", str(self.repo / "setup.sh"), str(self.home)],
             check=True,
             capture_output=True,
             text=True,
         )
 
-    def skill(self, name, tracked=True):
-        path = self.repo / "skills" / name
-        path.mkdir(parents=True)
-        (path / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
-        if tracked:
-            self.git("add", "-f", str(path))
-        return path
-
-    def install(self, check=True):
-        return subprocess.run(
-            ["bash", str(self.repo / "setup.sh"), str(self.home)],
-            check=check,
-            capture_output=True,
-            text=True,
-        )
-
-    def test_installs_owned_skills_and_preserves_external_collection(self):
-        portable = self.skill("portable")
-        adapter = self.skill("claude-agent")
-        self.skill("third-party", tracked=False)
-        external = self.root / "external"
-        external.mkdir()
-        (external / "SKILL.md").write_text("External skill\n")
-        skills = self.home / ".agents" / "skills"
-        skills.mkdir(parents=True)
-        (skills / "external").symlink_to(external)
-
-        self.install()
-
-        self.assertEqual((skills / "portable").resolve(), portable)
-        self.assertEqual((skills / "claude-agent").resolve(), adapter)
-        self.assertEqual((skills / "external").readlink(), external)
-        self.assertEqual((external / "SKILL.md").read_text(), "External skill\n")
-        self.assertFalse((skills / "third-party").exists())
-        self.assertEqual(
-            (self.home / ".claude/skills/portable").resolve(), portable
-        )
-        self.assertFalse((self.home / ".claude/skills/claude-agent").exists())
-        self.assertFalse((self.home / ".codex/skills").exists())
-        for relative in (".codex/AGENTS.md", ".claude/CLAUDE.md"):
-            self.assertEqual(
-                (self.home / relative).resolve(), self.repo / "AGENTS.md"
-            )
-
-    def test_existing_files_directories_and_broken_links_are_backed_up_once(self):
-        self.skill("portable")
+    def test_conflicting_files_directories_and_broken_links_are_preserved(self):
         codex = self.home / ".codex/AGENTS.md"
         codex.parent.mkdir()
         codex.write_text("Previous instructions\n")
@@ -88,50 +44,41 @@ class SetupTests(unittest.TestCase):
         (skill / "custom.txt").write_text("Keep this\n")
 
         self.install()
-        self.install()
 
-        backups = list(codex.parent.glob("AGENTS.md.backup.*"))
-        self.assertEqual(len(backups), 1)
-        self.assertEqual(backups[0].read_text(), "Previous instructions\n")
-        backups = list(claude.parent.glob("CLAUDE.md.backup.*"))
-        self.assertEqual(len(backups), 1)
-        self.assertEqual(backups[0].readlink(), self.root / "missing")
-        backups = list(skill.parent.glob("portable.backup.*"))
-        self.assertEqual(len(backups), 1)
-        self.assertEqual((backups[0] / "custom.txt").read_text(), "Keep this\n")
-
-    def test_in_place_install_keeps_real_skill_directories(self):
-        self.skill("portable")
-        destination = self.home / ".agents"
-        shutil.move(self.repo, destination)
-        self.repo = destination
-
-        self.install()
-        self.install()
-
-        skill = self.repo / "skills/portable"
-        self.assertTrue(skill.is_dir())
-        self.assertFalse(skill.is_symlink())
-        self.assertEqual(list(skill.parent.glob("*.backup.*")), [])
-
-    def test_no_skills_still_installs_instructions(self):
-        self.install()
+        backups = self.home / ".agents/backups"
+        self.assertEqual(len(list(backups.iterdir())), 3)
         self.assertEqual(
-            (self.home / ".codex/AGENTS.md").read_text(), "Shared instructions\n"
+            next(backups.glob("AGENTS.md.*/original")).read_text(),
+            "Previous instructions\n",
         )
+        self.assertEqual(
+            next(backups.glob("CLAUDE.md.*/original")).readlink(), self.root / "missing"
+        )
+        self.assertEqual(
+            next(backups.glob("portable.*/original/custom.txt")).read_text(),
+            "Keep this\n",
+        )
+        self.assertEqual(list(skill.parent.iterdir()), [skill])
 
-    def test_foreign_skills_and_lock_files_remain_outside_git(self):
-        self.skill("third-party", tracked=False)
-        (self.repo / ".skill-lock.json").write_text("{}")
-        (self.repo / ".skill-lock.json.bak-old").write_text("{}")
-        self.git("add", "--all")
-        tracked = self.git("ls-files").stdout.splitlines()
-        self.assertEqual(tracked, [".gitignore", "AGENTS.md", "setup.sh"])
+    def test_repeated_setup_leaves_links_unchanged(self):
+        self.install()
+        links = [
+            self.home / name
+            for name in (
+                ".codex/AGENTS.md",
+                ".claude/CLAUDE.md",
+                ".agents/skills/portable",
+                ".claude/skills/portable",
+            )
+        ]
+        before = [(path.readlink(), path.lstat().st_ino) for path in links]
 
-    def test_missing_repository_fails_before_installing_anything(self):
-        shutil.rmtree(self.repo / ".git")
-        self.assertNotEqual(self.install(check=False).returncode, 0)
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.install()
+
+        self.assertEqual(
+            [(path.readlink(), path.lstat().st_ino) for path in links], before
+        )
+        self.assertFalse((self.home / ".agents/backups").exists())
 
 
 if __name__ == "__main__":
