@@ -4,7 +4,7 @@ Use `--prompt-file` and keep the process's stdin open. In Codex, launch `exec_co
 
 ## Tool permissions
 
-On `approval_required`, present the requested action from `tool_name` and `tool_input`. After the user's decision, send one JSON line to the same process with `write_stdin`:
+On `approval_required`, present the requested action from `tool_name` and `tool_input`. Optional metadata includes `display_name` and `description` (label and subtitle), `decision_reason` (why confirmation was requested), `blocked_path` (the path that triggered it), and `agent_id` (the originating subagent). Unavailable values are `null`. After the user's decision, send one JSON line to the same process with `write_stdin`:
 
 ```json
 {"type":"approval","request_id":"ID_FROM_EVENT","input_sha256":"HASH_FROM_EVENT","decision":"approve"}

@@ -67,6 +67,7 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | `--effort` | Optional effort override: `low`, `medium`, `high`, `xhigh`, or `max`; support depends on the model and CLI. |
 | `--access` | Built-in tool profile: `none`, `read`, or `edit`. Defaults to `read`. |
 | `--allow-command` | Additional Bash permission rule. Repeatable; for example, `--allow-command 'git diff *'`. |
+| `--permission-mode` | Override Claude's configured permission mode for this run: `manual`, `auto`, `dontAsk`, `acceptEdits`, or `plan`. |
 | `--resume` | UUID of an existing Claude session. |
 | `--timeout` | Execution timeout in seconds, excluding user-input waits. Defaults to 900. |
 | `--input-timeout` | Timeout for one user response. Defaults to 3600. Alias: `--approval-timeout`. |

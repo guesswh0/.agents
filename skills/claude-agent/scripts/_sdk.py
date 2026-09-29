@@ -175,6 +175,11 @@ class Approvals:
                 tool_name=name,
                 tool_use_id=getattr(context, "tool_use_id", None),
                 title=getattr(context, "title", None) or name,
+                display_name=getattr(context, "display_name", None),
+                description=getattr(context, "description", None),
+                decision_reason=getattr(context, "decision_reason", None),
+                blocked_path=getattr(context, "blocked_path", None),
+                agent_id=getattr(context, "agent_id", None),
                 tool_input=snapshot,
             )
             try:
