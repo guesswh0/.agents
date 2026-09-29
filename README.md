@@ -3,6 +3,7 @@
 Shared configuration for coding agents.
 
 - `AGENTS.md` — common instructions.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution and commit rules.
 - `skills/` — tracked skills.
 - `setup.sh` — links for Codex and Claude Code.
 
