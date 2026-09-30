@@ -19,4 +19,6 @@ Expect `workflow_started`, periodic `progress`, and `workflow_finished`. If nati
 
 A plain answer without an observed workflow is `workflow_not_started`. A failed, unfinished, or unsynthesized workflow is `incomplete`. No automatic retry is performed by the adapter.
 
+The final event includes a phase summary from Claude's saved workflow data. Present it using [Results](results.md); individual agent answers are not exported.
+
 Use the host's normal process interruption to cancel. If the calling process disappears, the supervisor stops the SDK worker and its process group. To continue after interruption, inspect any changes and use Claude's saved session ID; the adapter has no task registry to recover pending approval requests.

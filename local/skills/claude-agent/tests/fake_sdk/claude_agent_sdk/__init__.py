@@ -130,6 +130,41 @@ async def query(prompt, options):
             if case == "workflow_pending":
                 return
             status = "failed" if case == "workflow_failed" else "completed"
+            if case == "workflow_metrics":
+                directory = (
+                    Path(os.environ["CLAUDE_CONFIG_DIR"])
+                    / "projects"
+                    / "test-project"
+                    / session
+                    / "workflows"
+                )
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / "run.json").write_text(
+                    json.dumps(
+                        {
+                            "taskId": task_id,
+                            "agentCount": 1,
+                            "totalTokens": 123,
+                            "startTime": 1000,
+                            "durationMs": 500,
+                            "workflowProgress": [
+                                {
+                                    "type": "workflow_phase",
+                                    "index": 1,
+                                    "title": "Check",
+                                },
+                                {
+                                    "type": "workflow_agent",
+                                    "phaseIndex": 1,
+                                    "model": "worker",
+                                    "tokens": 123,
+                                    "startedAt": 1000,
+                                    "durationMs": 400,
+                                },
+                            ],
+                        }
+                    )
+                )
             yield TaskNotificationMessage(
                 task_id=task_id, status=status, summary=status
             )

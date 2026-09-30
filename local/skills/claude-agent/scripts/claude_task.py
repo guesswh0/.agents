@@ -35,6 +35,7 @@ def parse_args():
         description="Run Claude Code through its SDK; return JSON events."
     )
     parser.add_argument("--cwd", required=True, type=Path)
+    parser.add_argument("--title", help="short task name for the execution summary")
     parser.add_argument("--prompt-file", default="-", help="UTF-8 brief; - reads stdin")
     parser.add_argument("--resume", type=session_uuid)
     parser.add_argument("--model", help="override Claude's configured model")
@@ -123,6 +124,7 @@ def prepare(args):
     return {
         **vars(args),
         "cwd": str(cwd),
+        "config_dir": str(config),
         "base": base,
         "prompt": prompt,
         "cli_path": executable,

@@ -9,6 +9,8 @@ import time
 import uuid
 import warnings
 
+from _presentation import execution_summary, save_answer
+
 
 ACCESS_TOOLS = {
     "none": [],
@@ -263,6 +265,7 @@ class Results:
         self.sdk = sdk
         self.latest = None
         self.models = set()
+        self.assistant_models = set()
         self.denials = []
         self.tasks = {}
         self.sequence = 0
@@ -272,6 +275,13 @@ class Results:
 
     def accept(self, message):
         self.sequence += 1
+        if (
+            isinstance(message, getattr(self.sdk, "AssistantMessage", ()))
+            and message.parent_tool_use_id is None
+            and message.model
+            and not message.model.startswith("<")
+        ):
+            self.assistant_models.add(message.model)
         if isinstance(message, self.sdk.ResultMessage):
             if message.session_id != self.job["base"]["session_id"]:
                 raise ValueError("Claude returned a different session ID")
@@ -352,6 +362,26 @@ class Results:
             status = "completed"
         if error:
             fields["error"] = error
+        fields["summary"], fields["presentation_warnings"] = execution_summary(
+            self.job,
+            latest,
+            self.tasks,
+            round(approvals.clock.elapsed() * 1000),
+            self.assistant_models or self.models,
+        )
+        fields["answer_file"] = None
+        if (
+            status == "completed"
+            and fields["summary"]["kind"] == "agent"
+            and isinstance(fields["result"], str)
+            and fields["result"]
+        ):
+            try:
+                fields["answer_file"] = save_answer(self.job, fields["result"])
+            except OSError as exc:
+                fields["presentation_warnings"].append(
+                    f"Could not save Claude's answer: {exc}"
+                )
         emit(self.job["base"], "result", status=status, **fields)
         return {
             "completed": 0,

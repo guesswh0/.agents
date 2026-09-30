@@ -16,6 +16,7 @@ Write a UTF-8 brief in the task's work directory, then invoke the adapter:
 ```sh
 python3 /absolute/path/to/claude-agent/scripts/claude_task.py \
   --cwd /absolute/path/to/project \
+  --title "Review error handling" \
   --access read \
   --prompt-file /absolute/path/to/work/claude-task.txt
 ```
@@ -31,6 +32,8 @@ For a dynamic workflow, read [references/workflows.md](references/workflows.md) 
 ## Read the result or continue
 
 Output is newline-delimited JSON. Read until the single final `type: result` event; earlier events are not the answer. Only `status: completed` means success. Verify the returned work against the task, relevant diff, or tests.
+
+Present the compact execution summary using [Results](references/results.md): one line and a link to Claude's verbatim answer for a single agent; phase rows and a total for a workflow. Set `--title` to a short task name in the user's language.
 
 Keep `session_id`, `cwd`, any explicit model/effort overrides, and a brief task summary in this chat and any context handoff. Continue with the same directory and `--resume SESSION_ID`; calls to one session must be sequential. Separate sessions can handle independent tasks. The final `models` field reports the actual models used.
 

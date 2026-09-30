@@ -64,6 +64,7 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | Option | Purpose |
 | --- | --- |
 | `--cwd` | Required working directory for Claude. |
+| `--title` | Short task name for the chat summary; otherwise the first prompt line is used. |
 | `--model` | Optional model override; accepts a name or alias supported by the CLI. |
 | `--effort` | Optional effort override: `low`, `medium`, `high`, `xhigh`, or `max`; support depends on the model and CLI. |
 | `--access` | Built-in tool profile: `none`, `read`, or `edit`. Defaults to `read`. |
@@ -125,6 +126,10 @@ Permission denial reasons appear in `permission_denials`. An error message, when
 
 Omitted model and effort overrides appear as `null` in the request metadata. This does not report Claude's resolved defaults; use `models` for the actual models used.
 
+The final event also includes `summary`, `answer_file`, and `presentation_warnings`. Codex shows a compact execution summary in the chat: a single agent's model, effort, tokens, duration, and answer link, or workflow phase rows and a total. See [Results](references/results.md) for metric boundaries and the display format.
+
+For a successful single-agent call, `answer_file` points to an exact UTF-8 copy of Claude's final answer at `~/.claude/claude-agent/answers/<session-id>/<unique-id>.md` (under `CLAUDE_CONFIG_DIR` when set). Resuming a session creates another file. Workflow calls export no answer files; their metrics are read from Claude's existing workflow JSON. Missing native data or an answer export error produces a presentation warning without changing execution success.
+
 A workflow refusal, EOF, or input timeout closes the input channel for the current invocation. See [User input](references/input.md) for details.
 
 On cancellation, timeout, or loss of the calling process, the supervisor stops the worker process group. After an interrupted call, a returned `session_id` alone does not guarantee complete history; inspect the result and project changes before resuming.
@@ -145,9 +150,11 @@ flowchart LR
 | --- | --- |
 | [SKILL.md](SKILL.md) | Instructions for Codex. |
 | [references/workflows.md](references/workflows.md) | Workflow and approval protocol. |
+| [references/results.md](references/results.md) | Chat summary and answer links. |
 | [scripts/claude_task.py](scripts/claude_task.py) | Arguments, environment checks, and launch. |
 | [scripts/_supervisor.py](scripts/_supervisor.py) | Process supervision and event forwarding. |
 | [scripts/_sdk.py](scripts/_sdk.py) | SDK calls, approvals, progress, and final status. |
+| [scripts/_presentation.py](scripts/_presentation.py) | Native workflow metrics and verbatim answer export. |
 | [scripts/install_runtime.py](scripts/install_runtime.py) | Local Python runtime setup. |
 | [scripts/requirements.txt](scripts/requirements.txt) | Pinned SDK dependency. |
 | [agents/openai.yaml](agents/openai.yaml) | Skill display name and description; not Claude agent definitions. |
@@ -168,4 +175,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
 - `history_unwritable`: the execution environment blocks writes to Claude's own history. Grant this access through the environment's normal permission mechanism.
 - Authentication errors: check the installed Claude Code CLI's login. The adapter does not use Claude Desktop authentication.
 
-Interactive Visualize panels are created separately in the chat. Automatic panels and continuous status updates are not built into this skill.
+Execution summaries use ordinary Markdown in the chat and require no visualization plugin.

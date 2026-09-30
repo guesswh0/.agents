@@ -192,6 +192,37 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(options["resume"], session)
         self.assertIsNone(options["session_id"])
 
+    def test_answer_export_is_verbatim_and_resume_preserves_previous_answer(self):
+        session = str(uuid.uuid4())
+        first = self.finish(self.start("--resume", session, "--title", "Проверка API"))
+        path = Path(first["answer_file"])
+        self.assertEqual(path.read_bytes(), first["result"].encode("utf-8"))
+        self.assertTrue(path.is_relative_to(Path(self.env["CLAUDE_CONFIG_DIR"])))
+        self.assertEqual(first["summary"]["title"], "Проверка API")
+        self.assertEqual(first["summary"]["tokens"], 190)
+        self.assertGreaterEqual(first["summary"]["duration_ms"], 0)
+        self.brief.write_text("A different task")
+        second = self.finish(self.start("--resume", session))
+        self.assertNotEqual(second["answer_file"], first["answer_file"])
+        self.assertEqual(path.read_bytes(), first["result"].encode("utf-8"))
+        self.assertEqual(
+            Path(second["answer_file"]).read_bytes(), second["result"].encode("utf-8")
+        )
+
+    def test_answer_export_failure_preserves_success_and_answer(self):
+        config = Path(self.env["CLAUDE_CONFIG_DIR"])
+        config.mkdir()
+        (config / "claude-agent").write_text("not a directory")
+        result = self.finish(self.start())
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["answer_file"])
+        self.assertTrue(result["result"])
+        self.assertTrue(result["presentation_warnings"])
+
+    def test_failed_agent_does_not_export_successful_answer(self):
+        result = self.finish(self.start(case="api_error"))
+        self.assertIsNone(result["answer_file"])
+
     def test_unset_config_directory_stays_unset_for_native_auth(self):
         spec = importlib.util.spec_from_file_location("entrypoint", ADAPTER)
         module = importlib.util.module_from_spec(spec)
@@ -258,6 +289,9 @@ class AdapterTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["result"], "finished")
+                self.assertIsNone(result["answer_file"])
+                self.assertIsNone(result["summary"]["tokens"])
+                self.assertTrue(result["presentation_warnings"])
                 self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
                 options = json.loads((self.project / "sdk-options.json").read_text())
                 self.assertEqual(options["permission_mode"], mode)
@@ -283,6 +317,29 @@ class AdapterTests(unittest.TestCase):
                     result["permission_denials"], [{"tool_name": "Workflow"}]
                 )
                 self.assertFalse((self.project / "approved-0.json").exists())
+
+    def test_workflow_summary_reads_native_metrics_without_exporting_answers(self):
+        result = self.finish(
+            self.start(
+                "--workflow",
+                "--effort",
+                "high",
+                case="workflow_metrics",
+                workflow_permission="allow",
+            )
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["summary"]["tokens"], 123)
+        self.assertEqual(result["summary"]["duration_ms"], 500)
+        phase = result["summary"]["workflows"][0]["phases"][0]
+        self.assertEqual(phase["title"], "Check")
+        self.assertEqual(phase["duration_ms"], 400)
+        self.assertEqual(phase["configurations"], [{"model": "worker", "effort": None}])
+        self.assertFalse(result["presentation_warnings"])
+        self.assertIsNone(result["answer_file"])
+        self.assertFalse(
+            (Path(self.env["CLAUDE_CONFIG_DIR"]) / "claude-agent").exists()
+        )
 
     def test_native_ask_waits_for_exact_approval_and_final_synthesis(self):
         process = self.start("--workflow", case="workflow")
