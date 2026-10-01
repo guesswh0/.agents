@@ -26,4 +26,4 @@ Answer every question. Multi-select answers may use an array of labels. For a ge
 
 Every response must end with a newline and match the pending request's ID and hash. Invalid responses produce `control_error` and leave the request waiting. Each response applies once. Accepted responses emit `approval_accepted` or `answer_accepted`; continue reading until the final `result` event.
 
-Keep the process handle and pending request in the current chat or context handoff. Closing stdin ends the exchange with `denied`; exceeding `--input-timeout` returns `timed_out`. Both close the channel, including queued requests. The default is 3600 seconds; `--approval-timeout` remains an alias. Waiting for user input does not consume the execution timeout.
+Keep the process handle and pending request in the current chat or context handoff. Closing stdin ends the exchange with `denied`; exceeding `--input-timeout` returns `timed_out`. Both close the channel, including queued requests. The default is 3600 seconds; `--approval-timeout` remains an alias. The idle timeout is suspended during this wait and starts a fresh window when the request resolves.

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,8 @@ from .types import (
     ResultMessage,
     TaskStartedMessage,
     TaskNotificationMessage,
+    StreamEvent,
+    TaskProgressMessage,
 )
 
 
@@ -36,7 +39,61 @@ async def query(prompt, options):
     }
     (cwd / "sdk-options.json").write_text(json.dumps(selected))
     assert not getattr(options, "hooks", None)
-    if case == "interaction":
+    if case == "blocked_host":
+        await asyncio.create_subprocess_exec(options.cli_path, cwd=cwd)
+        yield TaskStartedMessage(
+            task_id="task-0", task_type="local_workflow", description="x" * 500000
+        )
+        time.sleep(60)
+        return
+    if case in {"active_stream", "active_then_idle", "empty_heartbeats"}:
+        assert options.include_partial_messages is True
+        iterations, interval = (60, 0.05) if case == "active_stream" else (12, 0.1)
+        for _ in range(iterations):
+            yield StreamEvent(
+                event={"type": "ping"}
+                if case == "empty_heartbeats"
+                else {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "working"},
+                }
+            )
+            await asyncio.sleep(interval)
+        if case == "active_then_idle":
+            await asyncio.sleep(30)
+        yield ResultMessage(
+            session_id=session, result="finished after sustained activity"
+        )
+        return
+    if case in {"progress_active", "progress_stalled"}:
+        yield TaskStartedMessage(
+            task_id="task-0",
+            task_type="local_workflow",
+            description="progress workflow",
+        )
+        for index in range(12):
+            yield TaskProgressMessage(
+                task_id="task-0",
+                description="working",
+                usage={
+                    "total_tokens": index if case == "progress_active" else 0,
+                    "tool_uses": 0,
+                    "duration_ms": index * 100,
+                },
+            )
+            await asyncio.sleep(0.1)
+        yield TaskNotificationMessage(
+            task_id="task-0", status="completed", summary="done"
+        )
+        yield ResultMessage(session_id=session, result="finished")
+        return
+    if case == "blocked_event_loop":
+        time.sleep(60)
+        return
+    if case in {"interaction", "slow_question"}:
+        if case == "slow_question":
+            yield StreamEvent(event={"type": "message_start"})
+            await asyncio.sleep(0.25)
         for index, request in enumerate(json.loads(os.environ["FAKE_REQUESTS"])):
             name = request["name"]
             assert name in options.tools or name.startswith("mcp__")
@@ -56,6 +113,8 @@ async def query(prompt, options):
                     }
                 )
             )
+        if case == "slow_question":
+            await asyncio.sleep(0.25)
         yield ResultMessage(session_id=session, result="requests resolved")
         return
     if case == "stubborn":

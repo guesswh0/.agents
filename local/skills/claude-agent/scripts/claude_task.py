@@ -56,10 +56,12 @@ def parse_args():
         help="enable dynamic workflows",
     )
     parser.add_argument(
+        "--idle-timeout",
         "--timeout",
+        dest="idle_timeout",
         type=positive_seconds,
         default=900,
-        help="execution seconds, excluding user-input waits",
+        help="seconds without Claude activity, excluding user-input waits",
     )
     parser.add_argument(
         "--input-timeout", "--approval-timeout", type=positive_seconds, default=3600

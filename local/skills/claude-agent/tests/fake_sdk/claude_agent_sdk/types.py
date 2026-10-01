@@ -43,3 +43,7 @@ class TaskNotificationMessage(SimpleNamespace):
 
 class TaskProgressMessage(SimpleNamespace):
     pass
+
+
+class StreamEvent(SimpleNamespace):
+    pass

@@ -119,6 +119,7 @@ class AdapterTests(unittest.TestCase):
     def finish(self, process, timeout=8):
         output, errors = process.communicate(timeout=timeout)
         events = [json.loads(line) for line in output.splitlines()]
+        self.assertFalse(any(event["type"].startswith("_") for event in events))
         results = [event for event in events if event["type"] == "result"]
         self.assertEqual(len(results), 1, (events, errors.decode()))
         self.assertEqual(
@@ -140,8 +141,8 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(path.exists())
         return int(path.read_text())
 
-    def assert_stopped(self, pid):
-        deadline = time.monotonic() + 3
+    def assert_stopped(self, pid, timeout=3):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 os.kill(pid, 0)
@@ -694,6 +695,82 @@ class AdapterTests(unittest.TestCase):
         result = self.finish(process)
         self.assertEqual(result["status"], "timed_out")
         self.assert_stopped(child)
+
+    def test_active_stream_outlives_timeout(self):
+        for flag in ("--idle-timeout", "--timeout"):
+            with self.subTest(flag=flag):
+                result = self.finish(self.start(flag, "2", case="active_stream"))
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["result"], "finished after sustained activity")
+                self.assertGreaterEqual(result["summary"]["duration_ms"], 3000)
+
+    def test_watchdog_runs_while_host_stdout_is_blocked(self):
+        process = self.start("--workflow", "--idle-timeout", "1", case="blocked_host")
+        child = self.wait_for_file("child.pid")
+        sdk = self.wait_for_file("sdk.pid")
+        self.assert_stopped(sdk, timeout=6)
+        self.assert_stopped(child)
+        result = self.finish(process)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(process.returncode, 124)
+
+    def test_parent_loss_stops_children_while_host_stdout_is_blocked(self):
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=signum):
+                for name in ("sdk.pid", "child.pid"):
+                    (self.project / name).unlink(missing_ok=True)
+                process = self.start(
+                    "--workflow", "--idle-timeout", "60", case="blocked_host"
+                )
+                child = self.wait_for_file("child.pid")
+                sdk = self.wait_for_file("sdk.pid")
+                process.send_signal(signum)
+                self.assert_stopped(sdk, timeout=5)
+                self.assert_stopped(child)
+                self.assertEqual(self.finish(process)["status"], "cancelled")
+
+    def test_timeout_starts_from_last_activity(self):
+        process = self.start("--idle-timeout", "0.4", case="active_then_idle")
+        result = self.finish(process)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(process.returncode, 124)
+        self.assertIn("No Claude activity", result["error"])
+        self.assertGreaterEqual(result["summary"]["duration_ms"], 1400)
+
+    def test_ping_events_do_not_keep_a_stalled_run_alive(self):
+        result = self.finish(
+            self.start("--idle-timeout", "0.4", case="empty_heartbeats")
+        )
+        self.assertEqual(result["status"], "timed_out")
+
+    def test_workflow_requires_changing_progress(self):
+        for case, status in (
+            ("progress_active", "completed"),
+            ("progress_stalled", "timed_out"),
+        ):
+            with self.subTest(case=case):
+                result = self.finish(
+                    self.start("--workflow", "--idle-timeout", "0.4", case=case)
+                )
+                self.assertEqual(result["status"], status)
+
+    def test_watchdog_stops_a_blocked_sdk_event_loop(self):
+        process = self.start("--idle-timeout", "0.4", case="blocked_event_loop")
+        pid = self.wait_for_file("sdk.pid")
+        result = self.finish(process)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(process.returncode, 124)
+        self.assert_stopped(pid)
+
+    def test_answer_resets_the_idle_budget_after_user_wait(self):
+        process = self.start(
+            "--idle-timeout", "0.4", case="slow_question", requests=[self.question()]
+        )
+        event = self.next_event(process, "question_required")
+        time.sleep(0.5)
+        self.assertIsNone(process.poll())
+        self.reply(process, event, response="Use the defaults")
+        self.assertEqual(self.finish(process)["status"], "completed")
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | `--allow-command` | Additional Bash permission rule. Repeatable; for example, `--allow-command 'git diff *'`. |
 | `--permission-mode` | Override Claude's configured permission mode for this run: `manual`, `auto`, `dontAsk`, `acceptEdits`, or `plan`. |
 | `--resume` | UUID of an existing Claude session. |
-| `--timeout` | Execution timeout in seconds, excluding user-input waits. Defaults to 900. |
+| `--idle-timeout` | Maximum silence without observable Claude activity, in seconds. Defaults to 900. Alias: `--timeout`. |
 | `--input-timeout` | Timeout for one user response. Defaults to 3600. Alias: `--approval-timeout`. |
 
 `read` includes Read, Glob, and Grep. `edit` also includes Edit and Write. All profiles include AskUserQuestion. These profiles are not a filesystem sandbox. Claude's native settings, hooks, connectors, and permission rules remain active.
@@ -116,7 +116,7 @@ The adapter emits JSONL: one JSON event per line. Wait for the final `type: resu
 | `completed` | The task completed successfully. |
 | `denied` | The workflow was declined, or the approval input closed before a decision. |
 | `needs_permission` | A tool request did not receive the required permission. |
-| `timed_out` | Execution or approval waiting timed out. |
+| `timed_out` | Claude activity stopped for the idle window, or user-input waiting timed out. |
 | `cancelled` | Execution was cancelled. |
 | `workflow_not_started` | Workflow mode was requested, but no workflow launch was observed. |
 | `incomplete` | The workflow or its final synthesis did not complete. |
@@ -133,6 +133,16 @@ For a successful single-agent call, `answer_file` points to an exact UTF-8 copy 
 A workflow refusal, EOF, or input timeout closes the input channel for the current invocation. See [User input](references/input.md) for details.
 
 On cancellation, timeout, or loss of the calling process, the supervisor stops the worker process group. After an interrupted call, a returned `session_id` alone does not guarantee complete history; inspect the result and project changes before resuming.
+
+### Activity-based timeout
+
+Runs have no total duration limit. `--idle-timeout` measures silence since the latest observable activity, including streamed response content, completed tool results, task lifecycle events, and changing token/tool counters. Streaming uses the SDK's `include_partial_messages` option; its content is not forwarded into the chat. Activity checks and local watchdog messages make no additional model calls.
+
+The legacy `--timeout` flag now aliases the idle limit. The default remains 900 seconds, independent of model and effort. A run that keeps making progress can continue for hours. API pings and workflow updates that only change elapsed time do not reset the timer. Waiting for permission or an answer suspends it; resolving the request starts a fresh window. `--input-timeout` remains a separate limit for user responses.
+
+The watchdog runs in the supervisor, outside the SDK event loop, so a blocked worker can still be terminated. An idle timeout returns `timed_out` and exit code 124, with three seconds allowed for cleanup before the process group is killed. This detects lack of observable activity, not a proven deadlock: a tool or API operation that stays silent for the entire window can still time out. Subagent token deltas are not forwarded by the SDK; workflow progress counters and lifecycle events provide their activity signals.
+
+Host event forwarding runs in a separate thread with a temporary disk buffer, so a full stdout pipe cannot block timeout checks or parent-loss detection. After worker cleanup, forwarding gets up to three seconds to drain. If the host still does not read, the supervisor exits; delivery of the remaining output cannot be guaranteed. The temporary buffer is removed on exit.
 
 ## Components
 
@@ -154,6 +164,8 @@ flowchart LR
 | [scripts/claude_task.py](scripts/claude_task.py) | Arguments, environment checks, and launch. |
 | [scripts/_supervisor.py](scripts/_supervisor.py) | Process supervision and event forwarding. |
 | [scripts/_sdk.py](scripts/_sdk.py) | SDK calls, approvals, progress, and final status. |
+| [scripts/_activity.py](scripts/_activity.py) | Observable activity detection for the idle watchdog. |
+| [scripts/_output.py](scripts/_output.py) | Buffered host event forwarding independent of watchdog checks. |
 | [scripts/_presentation.py](scripts/_presentation.py) | Native workflow metrics and verbatim answer export. |
 | [scripts/install_runtime.py](scripts/install_runtime.py) | Local Python runtime setup. |
 | [scripts/requirements.txt](scripts/requirements.txt) | Pinned SDK dependency. |

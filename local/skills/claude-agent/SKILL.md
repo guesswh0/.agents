@@ -45,4 +45,6 @@ The adapter requires Python 3.11+ and the installed Claude CLI. It automatically
 
 Claude needs write access to its own history directory. The preflight checks this before contacting the model. If the host sandbox blocks that write, use the host's normal permission mechanism for the invocation. Claude's selected tool access stays unchanged.
 
-`--timeout` defaults to 900 execution seconds. User-input waits are excluded. The process supervisor stops the SDK worker and its process group on timeout, cancellation, or loss of the calling process. It runs only for the duration of this invocation.
+There is no total execution limit. `--idle-timeout` (alias `--timeout`) defaults to 900 seconds without observable Claude activity. Streamed response blocks, tool results, and changing task progress reset it; empty heartbeats and elapsed-time updates do not. User-input waits suspend it, and a reply starts a fresh idle window. A long silent operation can still expire: absence of events is not proof of a deadlock.
+
+The separate process supervisor enforces the idle timeout even if the SDK event loop hangs. It stops the SDK worker and its process group on timeout, cancellation, or loss of the calling process, allowing three seconds for cleanup before forced termination. It runs only for the duration of this invocation.

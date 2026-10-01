@@ -10,6 +10,7 @@ import uuid
 import warnings
 
 from _presentation import execution_summary, save_answer
+from _activity import Activity
 
 
 ACCESS_TOOLS = {
@@ -169,6 +170,7 @@ class Approvals:
             if self.input is None:
                 self.input = InputLines()
             self.clock.pause()
+            emit({}, "_input_wait")
             emit(
                 self.job["base"],
                 "question_required" if question else "approval_required",
@@ -253,6 +255,7 @@ class Approvals:
                 )
             finally:
                 self.clock.resume()
+                emit({}, "_input_resume")
 
     def close(self):
         if self.input is not None:
@@ -396,6 +399,7 @@ async def run(job, sdk):
     clock = Clock()
     approvals = Approvals(job, clock, sdk)
     results = Results(job, sdk)
+    activity = Activity(sdk)
     tools = list(ACCESS_TOOLS[job["access"]])
     allowed = list(tools)
     tools.append("AskUserQuestion")
@@ -418,10 +422,13 @@ async def run(job, sdk):
         permission_mode=job["permission_mode"],
         env=job["claude_env"],
         can_use_tool=approvals.decide,
+        include_partial_messages=True,
     )
 
     async def consume():
         async for message in sdk.query(prompt=job["prompt"], options=options):
+            if activity.observe(message):
+                emit({}, "_activity")
             results.accept(message)
 
     task = asyncio.create_task(consume())
@@ -434,17 +441,9 @@ async def run(job, sdk):
             emit(job["base"], "_shutdown", status=status)
             task.cancel()
 
-    async def watch_clock():
-        while not task.done():
-            if clock.elapsed() >= job["timeout"]:
-                stop("timed_out")
-                return
-            await asyncio.sleep(0.05)
-
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         loop.add_signal_handler(signum, stop, "cancelled")
-    watch = asyncio.create_task(watch_clock())
     error = None
     emit(job["base"], "started", workflow=job["workflow"])
     try:
@@ -454,8 +453,6 @@ async def run(job, sdk):
     except Exception as exc:
         error = str(exc)
     finally:
-        watch.cancel()
-        await asyncio.gather(watch, return_exceptions=True)
         approvals.close()
     return results.finish(approvals, reason, error)
 
@@ -474,6 +471,7 @@ def main():
             "TaskStartedMessage",
             "TaskNotificationMessage",
             "TaskProgressMessage",
+            "StreamEvent",
         ):
             setattr(sdk, name, getattr(types, name))
         # file tools are deliberately approved before the permission callback
