@@ -23,6 +23,8 @@ python3 /absolute/path/to/claude-agent/scripts/claude_task.py \
 
 `--model` and `--effort` are independent optional overrides. Omitted values use Claude Code's native defaults.
 
+Auto-compaction is enabled for this invocation without changing saved settings. Set `--context-window TOKENS` only for a requested auto-compaction window; otherwise native settings apply.
+
 Keep stdin open (`exec_command` with `tty: true` in Codex). On `approval_required` or `question_required`, follow [User input](references/input.md) to relay the request and return the user's response.
 
 `--access none`, `read`, and `edit` select file tools; all profiles include `AskUserQuestion`. Shell access uses repeatable `--allow-command` rules such as `--allow-command 'git diff *'`. These profiles are not a filesystem sandbox: native hooks, connectors, and permission rules remain active. Claude's configured permission mode is used unless `--permission-mode` is supplied.

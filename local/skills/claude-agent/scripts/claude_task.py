@@ -30,6 +30,15 @@ def session_uuid(value):
         raise argparse.ArgumentTypeError("session ID must be a UUID") from exc
 
 
+def context_window_tokens(value):
+    count = int(value)
+    if not 100000 <= count <= 1000000:
+        raise argparse.ArgumentTypeError(
+            "context window must be 100000 to 1000000 tokens"
+        )
+    return count
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run Claude Code through its SDK; return JSON events."
@@ -39,6 +48,11 @@ def parse_args():
     parser.add_argument("--prompt-file", default="-", help="UTF-8 brief; - reads stdin")
     parser.add_argument("--resume", type=session_uuid)
     parser.add_argument("--model", help="override Claude's configured model")
+    parser.add_argument(
+        "--context-window",
+        type=context_window_tokens,
+        help="auto-compaction window in tokens (100000-1000000); defaults to native settings",
+    )
     parser.add_argument(
         "--effort",
         choices=["low", "medium", "high", "xhigh", "max"],

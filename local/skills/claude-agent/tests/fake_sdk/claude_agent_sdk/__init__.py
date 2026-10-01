@@ -32,6 +32,7 @@ async def query(prompt, options):
             "permission_mode",
             "system_prompt",
             "setting_sources",
+            "settings",
             "env",
             "session_id",
             "resume",

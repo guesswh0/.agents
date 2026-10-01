@@ -66,6 +66,7 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | `--cwd` | Required working directory for Claude. |
 | `--title` | Short task name for the chat summary; otherwise the first prompt line is used. |
 | `--model` | Optional model override; accepts a name or alias supported by the CLI. |
+| `--context-window` | Optional auto-compaction window in tokens (100000-1000000), capped at the model's capacity. Omit to use native settings. |
 | `--effort` | Optional effort override: `low`, `medium`, `high`, `xhigh`, or `max`; support depends on the model and CLI. |
 | `--access` | Built-in tool profile: `none`, `read`, or `edit`. Defaults to `read`. |
 | `--allow-command` | Additional Bash permission rule. Repeatable; for example, `--allow-command 'git diff *'`. |
@@ -75,6 +76,8 @@ python3 "$skill_root/scripts/claude_task.py" --help
 | `--input-timeout` | Timeout for one user response. Defaults to 3600. Alias: `--approval-timeout`. |
 
 `read` includes Read, Glob, and Grep. `edit` also includes Edit and Write. All profiles include AskUserQuestion. These profiles are not a filesystem sandbox. Claude's native settings, hooks, connectors, and permission rules remain active.
+
+Auto-compaction is enabled for each invocation; saved Claude settings are unchanged.
 
 ### Permissions and questions
 

@@ -193,6 +193,35 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(options["resume"], session)
         self.assertIsNone(options["session_id"])
 
+    def test_autocompact_is_session_scoped_without_a_context_override(self):
+        config = Path(self.env["CLAUDE_CONFIG_DIR"])
+        config.mkdir()
+        settings = config / "settings.json"
+        original = '{"autoCompactEnabled": false, "env": {"DISABLE_COMPACT": "1"}}\n'
+        settings.write_text(original)
+        self.env.update(DISABLE_COMPACT="1", DISABLE_AUTO_COMPACT="1")
+        for arguments in ([], ["--resume", str(uuid.uuid4())]):
+            with self.subTest(arguments=arguments):
+                result = self.finish(self.start(*arguments))
+                self.assertEqual(result["status"], "completed")
+                options = json.loads(result["result"])["options"]
+                expected_env = {"DISABLE_COMPACT": "0", "DISABLE_AUTO_COMPACT": "0"}
+                self.assertEqual(
+                    json.loads(options["settings"]),
+                    {
+                        "autoCompactEnabled": True,
+                        "env": expected_env,
+                    },
+                )
+                self.assertEqual(
+                    options["env"], {"CLAUDE_CONFIG_DIR": str(config), **expected_env}
+                )
+                self.assertEqual(settings.read_text(), original)
+                self.assertEqual(self.env["DISABLE_COMPACT"], "1")
+                self.assertEqual(
+                    options["setting_sources"], ["user", "project", "local"]
+                )
+
     def test_answer_export_is_verbatim_and_resume_preserves_previous_answer(self):
         session = str(uuid.uuid4())
         first = self.finish(self.start("--resume", session, "--title", "Проверка API"))
@@ -209,6 +238,58 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             Path(second["answer_file"]).read_bytes(), second["result"].encode("utf-8")
         )
+
+    def test_context_window_override_does_not_persist_on_resume(self):
+        config = Path(self.env["CLAUDE_CONFIG_DIR"])
+        config.mkdir()
+        settings = config / "settings.json"
+        original = '{"autoCompactEnabled": false, "autoCompactWindow": 500000}\n'
+        settings.write_text(original)
+        self.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "500000"
+        first = self.finish(self.start("--context-window", "253123"))
+        options = json.loads(first["result"])["options"]
+        self.assertEqual(options["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "253123")
+        self.assertEqual(
+            json.loads(options["settings"])["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+            "253123",
+        )
+        second = self.finish(self.start("--resume", first["session_id"]))
+        options = json.loads(second["result"])["options"]
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", options["env"])
+        self.assertNotIn(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW", json.loads(options["settings"])["env"]
+        )
+        self.assertEqual(settings.read_text(), original)
+        self.assertEqual(self.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "500000")
+
+    def test_context_window_supported_bounds_and_workflows(self):
+        for window in ("100000", "1000000"):
+            with self.subTest(window=window):
+                result = self.finish(
+                    self.start(
+                        "--workflow",
+                        "--context-window",
+                        window,
+                        case="workflow_metrics",
+                        workflow_permission="allow",
+                    )
+                )
+                self.assertEqual(result["status"], "completed")
+                options = json.loads((self.project / "sdk-options.json").read_text())
+                self.assertEqual(
+                    options["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], window
+                )
+                self.assertTrue(json.loads(options["settings"])["autoCompactEnabled"])
+
+    def test_invalid_context_window_does_not_start_sdk(self):
+        for value in ("99999", "1000001", "0", "-1", "text"):
+            with self.subTest(value=value):
+                process = self.start("--context-window", value)
+                output, errors = process.communicate(timeout=8)
+                self.assertEqual(process.returncode, 2)
+                self.assertIn(b"--context-window", errors)
+                self.assertEqual(output, b"")
+                self.assertFalse((self.project / "sdk.pid").exists())
 
     def test_answer_export_failure_preserves_success_and_answer(self):
         config = Path(self.env["CLAUDE_CONFIG_DIR"])

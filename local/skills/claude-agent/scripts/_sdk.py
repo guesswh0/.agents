@@ -408,6 +408,9 @@ async def run(job, sdk):
         allowed.extend("Bash(" + rule + ")" for rule in job["allow_command"])
     if job["workflow"]:
         tools.append("Workflow")
+    session_env = {"DISABLE_AUTO_COMPACT": "0", "DISABLE_COMPACT": "0"}
+    if job["context_window"] is not None:
+        session_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(job["context_window"])
     options = sdk.ClaudeAgentOptions(
         cli_path=job["cli_path"],
         cwd=job["cwd"],
@@ -419,8 +422,9 @@ async def run(job, sdk):
         allowed_tools=allowed,
         system_prompt={"type": "preset", "preset": "claude_code"},
         setting_sources=["user", "project", "local"],
+        settings=json.dumps({"autoCompactEnabled": True, "env": session_env}),
         permission_mode=job["permission_mode"],
-        env=job["claude_env"],
+        env={**job["claude_env"], **session_env},
         can_use_tool=approvals.decide,
         include_partial_messages=True,
     )
