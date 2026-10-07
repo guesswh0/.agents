@@ -1,5 +1,5 @@
 from _contracts import Job, Outcome
-from _presentation import base_summary, execution_summary, save_answer
+from _presentation import execution_summary, save_answer
 
 
 def finalize(job: Job, outcome: Outcome | None = None, reason=None, error=None):
@@ -39,7 +39,9 @@ def finalize(job: Job, outcome: Outcome | None = None, reason=None, error=None):
     models = observation.models
     summary_models = observation.assistant_models or models
     duration = observation.duration_ms
-    summary = base_summary(job, tasks, duration, summary_models)
+    summary, summary_warnings = execution_summary(
+        job, (latest.usage if latest else None), tasks, duration, summary_models
+    )
     warnings = []
     answer = (latest.result if latest else None) or ""
     answer_file = None
@@ -53,14 +55,7 @@ def finalize(job: Job, outcome: Outcome | None = None, reason=None, error=None):
             answer_file = save_answer(job, answer)
         except Exception as exc:
             warnings.append(f"Could not save Claude's answer: {exc}")
-    try:
-        summary, summary_warnings = execution_summary(
-            job, (latest.usage if latest else None), tasks, duration, summary_models
-        )
-        warnings.extend(summary_warnings)
-    except Exception as exc:
-        # presentation must not discard the answer or change execution status
-        warnings.append(f"Could not prepare execution summary: {exc}")
+    warnings.extend(summary_warnings)
     event = {
         **job.base,
         "type": "result",

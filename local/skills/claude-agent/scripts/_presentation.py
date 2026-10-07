@@ -139,44 +139,37 @@ def workflow_summaries(job, tasks):
     return summaries, warnings
 
 
-def base_summary(job, tasks, duration_ms, models):
+def execution_summary(job, usage, tasks, duration_ms, models):
     workflow = job.workflow or bool(tasks)
     summary = {
         "title": job.title or job.prompt.strip().splitlines()[0][:120],
         "kind": "workflow" if workflow else "agent",
-        "configurations": configurations(
-            [{"model": model, "effort": job.effort} for model in models]
-        ),
+        "configurations": [],
         "tokens": None,
-        "duration_ms": duration_ms,
-        "agent_count": 1,
+        "duration_ms": None if workflow else duration_ms,
+        "agent_count": None if workflow else 1,
         "workflows": [],
     }
     if workflow:
-        summary.update(
-            configurations=[],
-            duration_ms=None,
-            agent_count=None,
-            token_scope="workflow_agents",
-        )
-    return summary
-
-
-def execution_summary(job, usage, tasks, duration_ms, models):
-    summary = base_summary(job, tasks, duration_ms, models)
+        summary["token_scope"] = "workflow_agents"
     warnings = []
-    if summary["kind"] == "workflow":
-        workflows, warnings = workflow_summaries(job, tasks)
-        summary.update(
-            workflows=workflows,
-            configurations=[],
-            tokens=total(workflow["tokens"] for workflow in workflows),
-            duration_ms=span(workflows, "started_at", "duration_ms"),
-            agent_count=total(workflow["agent_count"] for workflow in workflows),
-            token_scope="workflow_agents",
-        )
-    else:
-        summary["tokens"] = tokens(usage)
+    try:
+        if workflow:
+            workflows, warnings = workflow_summaries(job, tasks)
+            summary.update(
+                workflows=workflows,
+                tokens=total(workflow["tokens"] for workflow in workflows),
+                duration_ms=span(workflows, "started_at", "duration_ms"),
+                agent_count=total(workflow["agent_count"] for workflow in workflows),
+            )
+        else:
+            summary["configurations"] = configurations(
+                [{"model": model, "effort": job.effort} for model in models]
+            )
+            summary["tokens"] = tokens(usage)
+    except Exception as exc:
+        # presentation failures must leave a usable summary with unknown metrics
+        warnings.append(f"Could not prepare execution summary: {exc}")
     return summary, warnings
 
 

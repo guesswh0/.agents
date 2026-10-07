@@ -126,12 +126,16 @@ The adapter emits JSONL: one JSON event per line. Wait for the final `type: resu
 | `workflow_not_started` | Workflow mode was requested, but no workflow launch was observed. |
 | `incomplete` | The workflow or its final synthesis did not complete. |
 | `failed` | Execution failed. |
+| `dependency_missing` | The worker could not import the installed SDK. |
+| `invalid_input` | Launch preparation failed, such as an empty brief or missing CLI. |
+| `history_unwritable` | Claude's history directory is not writable. |
+| `unavailable` | Python is older than 3.11. |
 
 Permission denial reasons appear in `permission_denials`. An error message, when available, appears in `error`. The `models` field lists actual models reported by the native session, which may include auxiliary Claude models.
 
 Omitted model and effort overrides appear as `null` in the request metadata. This does not report Claude's resolved defaults; use `models` for the actual models used.
 
-The final event also includes `summary`, `answer_file`, and `presentation_warnings`. Codex shows a compact Markdown summary: one line for a single agent, one row per separate agent run, or phase rows and a total for native Claude workflows. See [Results](references/results.md) for metric boundaries and the display format.
+Execution results also include `summary`, `answer_file`, and `presentation_warnings`; failures before the supervisor starts have only status and error information. Codex shows a compact Markdown summary: one line for a single agent, one row per separate agent run, or phase rows and a total for native Claude workflows. See [Results](references/results.md) for metric boundaries and the display format.
 
 For a successful single-agent call, `answer_file` points to an exact UTF-8 copy of Claude's final answer at `~/.claude/claude-agent/answers/<session-id>/<unique-id>.md` (under `CLAUDE_CONFIG_DIR` when set). Resuming a session creates another file. Workflow calls export no answer files; their metrics are read from Claude's existing workflow JSON. Missing native data or an answer export error produces a presentation warning without changing execution success.
 

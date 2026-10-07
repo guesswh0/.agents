@@ -232,16 +232,27 @@ class AdapterRulesTests(unittest.TestCase):
 
     def test_presentation_failures_do_not_lose_success_or_raw_answer(self):
         answer = "# Ответ\r\n\n`x < y`\n"
-        outcome = self.observed([result_message(result=answer)])
-        for summary_fails, export_fails in ((True, False), (False, True), (True, True)):
-            with self.subTest(summary=summary_fails, export=export_fails):
+        for workflow, summary_fails, export_fails in (
+            (False, True, False),
+            (False, False, True),
+            (False, True, True),
+            (True, True, False),
+        ):
+            with self.subTest(
+                workflow=workflow, summary=summary_fails, export=export_fails
+            ):
                 import _result
+                import _presentation
 
+                self.job = replace(self.job, workflow=workflow)
+                messages = [workflow_started(), workflow_finished()] if workflow else []
+                outcome = self.observed([*messages, result_message(result=answer)])
+                metrics = "workflow_summaries" if workflow else "tokens"
                 with (
                     mock.patch.object(
-                        _result,
-                        "execution_summary",
-                        wraps=_result.execution_summary,
+                        _presentation,
+                        metrics,
+                        wraps=getattr(_presentation, metrics),
                         **(
                             {"side_effect": RuntimeError("summary unavailable")}
                             if summary_fails
@@ -263,7 +274,7 @@ class AdapterRulesTests(unittest.TestCase):
                 self.assertEqual((event["status"], exit_code), ("completed", 0))
                 self.assertEqual(event["result"], answer)
                 self.assertTrue(event["presentation_warnings"])
-                if export_fails:
+                if export_fails or workflow:
                     self.assertIsNone(event["answer_file"])
                 else:
                     self.assertEqual(
