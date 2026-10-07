@@ -278,7 +278,7 @@ class Results:
     def accept(self, message):
         self.sequence += 1
         if (
-            isinstance(message, getattr(self.sdk, "AssistantMessage", ()))
+            isinstance(message, self.sdk.AssistantMessage)
             and message.parent_tool_use_id is None
             and message.model
             and not message.model.startswith("<")
@@ -422,22 +422,9 @@ def main():
         job = json.load(request)
     try:
         import claude_agent_sdk as sdk
-        from claude_agent_sdk import types
 
-        for name in (
-            "PermissionResultAllow",
-            "PermissionResultDeny",
-            "ResultMessage",
-            "TaskStartedMessage",
-            "TaskNotificationMessage",
-            "TaskProgressMessage",
-            "StreamEvent",
-        ):
-            setattr(sdk, name, getattr(types, name))
         # file tools are deliberately approved before the permission callback
-        warning = getattr(types, "CanUseToolShadowedWarning", None)
-        if warning:
-            warnings.filterwarnings("ignore", category=warning)
+        warnings.filterwarnings("ignore", category=sdk.CanUseToolShadowedWarning)
     except ImportError:
         emit(
             job["base"],

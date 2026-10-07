@@ -3,9 +3,6 @@ class Activity:
         self.sdk = sdk
         self.tasks = {}
 
-    def is_type(self, message, name):
-        return isinstance(message, getattr(self.sdk, name, ()))
-
     def changed(self, key, values):
         previous = self.tasks.setdefault(key, {})
         changed = any(previous.get(k) != v for k, v in values.items())
@@ -13,7 +10,7 @@ class Activity:
         return changed
 
     def observe(self, message):
-        if self.is_type(message, "StreamEvent"):
+        if isinstance(message, self.sdk.StreamEvent):
             event = message.event
             if event.get("type") == "content_block_delta":
                 delta = event.get("delta", {})
@@ -30,7 +27,7 @@ class Activity:
                 "message_delta",
                 "message_stop",
             }
-        if self.is_type(message, "TaskProgressMessage"):
+        if isinstance(message, self.sdk.TaskProgressMessage):
             usage = message.usage or {}
             return self.changed(
                 ("usage", message.task_id),
@@ -40,22 +37,22 @@ class Activity:
                     if key in usage
                 },
             )
-        if self.is_type(message, "TaskUpdatedMessage"):
+        if isinstance(message, self.sdk.TaskUpdatedMessage):
             patch = message.patch
             values = {
                 key: patch[key] for key in ("status", "result", "error") if key in patch
             }
             return self.changed(("state", message.task_id), values)
-        if self.is_type(message, "SystemMessage"):
+        if isinstance(message, self.sdk.SystemMessage):
             if message.subtype in {"init", "compact_boundary"}:
                 return True
-        return any(
-            self.is_type(message, name)
-            for name in (
-                "AssistantMessage",
-                "UserMessage",
-                "ResultMessage",
-                "TaskStartedMessage",
-                "TaskNotificationMessage",
-            )
+        return isinstance(
+            message,
+            (
+                self.sdk.AssistantMessage,
+                self.sdk.UserMessage,
+                self.sdk.ResultMessage,
+                self.sdk.TaskStartedMessage,
+                self.sdk.TaskNotificationMessage,
+            ),
         )

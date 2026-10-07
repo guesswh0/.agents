@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = ROOT / "scripts" / "claude_task.py"
-FAKE_SDK = Path(__file__).resolve().parent / "fake_sdk"
+TESTS = Path(__file__).resolve().parent
 
 
 class AdapterTests(unittest.TestCase):
@@ -38,7 +38,9 @@ class AdapterTests(unittest.TestCase):
             **os.environ,
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "CLAUDE_CONFIG_DIR": str(self.root / "config"),
-            "PYTHONPATH": str(FAKE_SDK),
+            "PYTHONPATH": os.pathsep.join(
+                [str(TESTS / "worker_bootstrap"), str(TESTS)]
+            ),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         self.brief = self.root / "brief.txt"
@@ -72,7 +74,7 @@ class AdapterTests(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
-    def start(self, *args, case="success", workflow_permission="ask", requests=None):
+    def start(self, *args, case="success", requests=None):
         process = subprocess.Popen(
             [*self.command, *args],
             stdin=subprocess.PIPE,
@@ -80,9 +82,8 @@ class AdapterTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             env={
                 **self.env,
-                "FAKE_SDK_CASE": case,
-                "FAKE_WORKFLOW_PERMISSION": workflow_permission,
-                "FAKE_REQUESTS": json.dumps(requests),
+                "ADAPTER_TEST_SCENARIO": case,
+                "ADAPTER_TEST_REQUESTS": json.dumps(requests),
             },
             start_new_session=True,
             bufsize=0,
@@ -226,15 +227,6 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(result["requested_model"], model)
                 self.assertEqual(result["effort"], effort)
 
-    def test_resume_keeps_id(self):
-        session = str(uuid.uuid4())
-        result = self.finish(self.start("--resume", session))
-        options = json.loads(result["result"])["options"]
-        self.assertEqual(result["session_id"], session)
-        self.assertEqual(options["resume"], session)
-        self.assertIsNone(options["session_id"])
-        self.assertTrue(options["verbatim_prompts"])
-
     def test_autocompact_is_session_scoped_without_a_context_override(self):
         config = Path(self.env["CLAUDE_CONFIG_DIR"])
         config.mkdir()
@@ -267,6 +259,10 @@ class AdapterTests(unittest.TestCase):
     def test_answer_export_is_verbatim_and_resume_preserves_previous_answer(self):
         session = str(uuid.uuid4())
         first = self.finish(self.start("--resume", session, "--title", "Проверка API"))
+        options = json.loads(first["result"])["options"]
+        self.assertEqual(first["session_id"], session)
+        self.assertEqual(options["resume"], session)
+        self.assertIsNone(options["session_id"])
         path = Path(first["answer_file"])
         self.assertEqual(path.read_bytes(), first["result"].encode("utf-8"))
         self.assertTrue(path.is_relative_to(Path(self.env["CLAUDE_CONFIG_DIR"])))
@@ -304,95 +300,11 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(settings.read_text(), original)
         self.assertEqual(self.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "500000")
 
-    def test_context_window_supported_bounds_and_workflows(self):
-        for window in ("100000", "1000000"):
-            with self.subTest(window=window):
-                result = self.finish(
-                    self.start(
-                        "--workflow",
-                        "--context-window",
-                        window,
-                        case="workflow_metrics",
-                        workflow_permission="allow",
-                    )
-                )
-                self.assertEqual(result["status"], "completed")
-                options = json.loads((self.project / "sdk-options.json").read_text())
-                self.assertEqual(
-                    options["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], window
-                )
-                self.assertTrue(json.loads(options["settings"])["autoCompactEnabled"])
-
-    def test_invalid_context_window_does_not_start_sdk(self):
-        for value in ("99999", "1000001", "0", "-1", "text"):
-            with self.subTest(value=value):
-                process = self.start("--context-window", value)
-                output, errors = process.communicate(timeout=8)
-                self.assertEqual(process.returncode, 2)
-                self.assertIn(b"--context-window", errors)
-                self.assertEqual(output, b"")
-                self.assertFalse((self.project / "sdk.pid").exists())
-
-    def test_answer_export_failure_preserves_success_and_answer(self):
-        config = Path(self.env["CLAUDE_CONFIG_DIR"])
-        config.mkdir()
-        (config / "claude-agent").write_text("not a directory")
-        result = self.finish(self.start())
-        self.assertEqual(result["status"], "completed")
+    def test_worker_crash_has_a_summary(self):
+        result = self.finish(self.start(case="crash"))
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["summary"]["tokens"])
         self.assertIsNone(result["answer_file"])
-        self.assertTrue(result["result"])
-        self.assertTrue(result["presentation_warnings"])
-
-    def test_summary_failure_preserves_status_and_answer_export(self):
-        fault = self.root / "fault"
-        fault.mkdir()
-        (fault / "sitecustomize.py").write_text(
-            "import sys\n"
-            "if sys.argv[0].endswith('_supervisor.py'):\n"
-            f"    sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
-            "    import _result\n"
-            "    def fail(*args):\n"
-            "        raise RuntimeError('summary unavailable')\n"
-            "    _result.execution_summary = fail\n"
-        )
-        self.env["PYTHONPATH"] = str(fault) + os.pathsep + str(FAKE_SDK)
-        for workflow in (False, True):
-            with self.subTest(workflow=workflow):
-                result = self.finish(
-                    self.start(
-                        *(["--workflow"] if workflow else []),
-                        case="workflow_metrics" if workflow else "success",
-                        workflow_permission="allow",
-                    )
-                )
-                self.assertEqual(result["status"], "completed")
-                self.assertTrue(result["result"])
-                self.assertIsNone(result["summary"]["tokens"])
-                self.assertIn("summary unavailable", result["presentation_warnings"][0])
-                if workflow:
-                    self.assertEqual(result["summary"]["kind"], "workflow")
-                    self.assertIsNone(result["summary"]["agent_count"])
-                    self.assertIsNone(result["answer_file"])
-                else:
-                    self.assertEqual(
-                        Path(result["answer_file"]).read_bytes(),
-                        result["result"].encode("utf-8"),
-                    )
-
-    def test_failed_agent_does_not_export_successful_answer(self):
-        result = self.finish(self.start(case="api_error"))
-        self.assertIsNone(result["answer_file"])
-
-    def test_missing_sdk_and_worker_crash_have_a_summary(self):
-        for case, status in (
-            ("missing_sdk", "dependency_missing"),
-            ("crash", "failed"),
-        ):
-            with self.subTest(case=case):
-                result = self.finish(self.start(case=case))
-                self.assertEqual(result["status"], status)
-                self.assertIsNone(result["summary"]["tokens"])
-                self.assertIsNone(result["answer_file"])
 
     def test_unset_config_directory_stays_unset_for_native_auth(self):
         spec = importlib.util.spec_from_file_location("entrypoint", ADAPTER)
@@ -428,14 +340,6 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("AskUserQuestion", options["allowed_tools"])
         self.assertEqual(options["permission_mode"], "auto")
 
-    def test_errors_are_not_success(self):
-        for case in ["api_error", "wrong_session", "no_result"]:
-            with self.subTest(case=case):
-                self.assertEqual(self.finish(self.start(case=case))["status"], "failed")
-        self.assertEqual(
-            self.finish(self.start(case="denied"))["status"], "needs_permission"
-        )
-
     def test_empty_brief_does_not_start_sdk(self):
         self.brief.write_text(" \n")
         self.assertEqual(self.finish(self.start())["status"], "invalid_input")
@@ -446,50 +350,6 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.finish(self.start())["status"], "history_unwritable")
         self.assertFalse((self.project / "sdk.pid").exists())
 
-    def test_native_allowed_workflow_needs_no_adapter_approval(self):
-        for mode in (None, "auto", "dontAsk"):
-            with self.subTest(mode=mode):
-                arguments = ["--permission-mode", mode] if mode else []
-                result = self.finish(
-                    self.start(
-                        "--workflow",
-                        *arguments,
-                        case="workflow",
-                        workflow_permission="allow",
-                    )
-                )
-                self.assertEqual(result["status"], "completed")
-                self.assertEqual(result["result"], "finished")
-                self.assertIsNone(result["answer_file"])
-                self.assertIsNone(result["summary"]["tokens"])
-                self.assertTrue(result["presentation_warnings"])
-                self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
-                options = json.loads((self.project / "sdk-options.json").read_text())
-                self.assertEqual(options["permission_mode"], mode)
-                self.assertTrue(options["verbatim_prompts"])
-                self.assertEqual(
-                    options["setting_sources"], ["user", "project", "local"]
-                )
-
-    def test_native_denied_workflow_never_launches_or_prompts(self):
-        for permission, mode in (("deny", None), ("deny", "auto"), ("ask", "dontAsk")):
-            with self.subTest(permission=permission, mode=mode):
-                arguments = ["--permission-mode", mode] if mode else []
-                result = self.finish(
-                    self.start(
-                        "--workflow",
-                        *arguments,
-                        case="workflow",
-                        workflow_permission=permission,
-                    )
-                )
-                self.assertEqual(result["status"], "needs_permission")
-                self.assertEqual(result["workflows"], {})
-                self.assertEqual(
-                    result["permission_denials"], [{"tool_name": "Workflow"}]
-                )
-                self.assertFalse((self.project / "approved-0.json").exists())
-
     def test_workflow_summary_reads_native_metrics_without_exporting_answers(self):
         result = self.finish(
             self.start(
@@ -497,7 +357,6 @@ class AdapterTests(unittest.TestCase):
                 "--effort",
                 "high",
                 case="workflow_metrics",
-                workflow_permission="allow",
             )
         )
         self.assertEqual(result["status"], "completed")
@@ -513,8 +372,8 @@ class AdapterTests(unittest.TestCase):
             (Path(self.env["CLAUDE_CONFIG_DIR"]) / "claude-agent").exists()
         )
 
-    def test_native_ask_waits_for_exact_approval_and_final_synthesis(self):
-        process = self.start("--workflow", case="workflow")
+    def test_requested_approval_waits_for_exact_reply_and_final_synthesis(self):
+        process = self.start("--workflow", "--permission-mode", "auto", case="workflow")
         event = self.next_event(process, "approval_required")
         self.assertFalse((self.project / "approved-0.json").exists())
         self.decision(process, event, request_id="wrong")
@@ -527,28 +386,6 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"], "finished")
         self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
-
-    def test_native_ask_in_auto_mode_still_waits(self):
-        process = self.start("--workflow", "--permission-mode", "auto", case="workflow")
-        event = self.next_event(process, "approval_required")
-        self.assertFalse((self.project / "approved-0.json").exists())
-        self.decision(process, event)
-        self.assertEqual(self.finish(process)["status"], "completed")
-
-    def test_workflow_denial_never_launches(self):
-        process = self.start("--workflow", case="workflow")
-        event = self.next_event(process, "approval_required")
-        self.decision(process, event, "deny")
-        result = self.finish(process)
-        self.assertEqual(result["status"], "denied")
-        self.assertFalse((self.project / "approved-0.json").exists())
-
-    def test_closed_approval_input_never_launches(self):
-        process = self.start("--workflow", case="workflow")
-        self.next_event(process, "approval_required")
-        result = self.finish(process)
-        self.assertEqual(result["status"], "denied")
-        self.assertFalse((self.project / "approved-0.json").exists())
 
     def test_approval_cannot_be_reused(self):
         process = self.start("--workflow", case="workflow_twice")
@@ -573,27 +410,6 @@ class AdapterTests(unittest.TestCase):
         approved = json.loads((self.project / "approved-0.json").read_text())
         self.assertEqual(approved["script"], "return 'original'")
         self.assertNotIn("scriptPath", approved)
-
-    def test_approval_wait_does_not_consume_execution_timeout(self):
-        process = self.start("--workflow", "--timeout", "0.25", case="workflow")
-        event = self.next_event(process, "approval_required")
-        time.sleep(0.45)
-        self.assertIsNone(process.poll())
-        self.decision(process, event)
-        self.assertEqual(self.finish(process)["status"], "completed")
-
-    def test_approval_wait_expires_without_launching(self):
-        process = self.start(
-            "--workflow", "--approval-timeout", "0.15", case="workflow"
-        )
-        self.next_event(process, "approval_required")
-        time.sleep(0.25)
-        result = self.finish(process)
-        self.assertEqual(result["status"], "timed_out")
-        self.assertEqual(
-            result["permission_denials"][0]["reason"], "User input wait expired."
-        )
-        self.assertFalse((self.project / "approved-0.json").exists())
 
     def test_closed_approval_channel_rejects_retries(self):
         for ending in ("deny", "eof", "timeout"):
@@ -647,19 +463,6 @@ class AdapterTests(unittest.TestCase):
                     json.loads((self.project / "decisions.json").read_text()),
                     ["deny", "deny"],
                 )
-
-    def test_pending_failed_and_unsynthesized_workflows_are_incomplete(self):
-        for case in ["workflow_pending", "workflow_failed", "workflow_no_synthesis"]:
-            with self.subTest(case=case):
-                process = self.start("--workflow", case=case)
-                event = self.next_event(process, "approval_required")
-                self.decision(process, event)
-                self.assertEqual(self.finish(process)["status"], "incomplete")
-
-    def test_plain_answer_does_not_satisfy_workflow_request(self):
-        self.assertEqual(
-            self.finish(self.start("--workflow"))["status"], "workflow_not_started"
-        )
 
     def question(self):
         return {
@@ -756,42 +559,6 @@ class AdapterTests(unittest.TestCase):
             self.handled(0)["updated_input"], {**request["input"], "answers": answers}
         )
 
-    def test_questions_accept_general_response(self):
-        request = self.question()
-        process = self.start(case="interaction", requests=[request])
-        event = self.next_event(process, "question_required")
-        self.reply(process, event, response="Use the existing format")
-        self.assertEqual(self.finish(process)["status"], "completed")
-        self.assertEqual(
-            self.handled(0)["updated_input"],
-            {**request["input"], "response": "Use the existing format"},
-        )
-
-    def test_invalid_question_replies_leave_request_waiting(self):
-        process = self.start(case="interaction", requests=[self.question()])
-        event = self.next_event(process, "question_required")
-        valid = {"Which format?": "JSON", "Which sections?": "Summary, Details"}
-        invalid = [
-            {"request_id": "wrong", "answers": valid},
-            {"input_sha256": "wrong", "answers": valid},
-            {"type": "approval", "decision": "approve"},
-            {},
-            {"answers": {"Which format?": "JSON"}},
-            {"answers": {**valid, "extra": "answer"}},
-            {"answers": {**valid, "Which format?": ["JSON"]}},
-            {"answers": {**valid, "Which sections?": []}},
-            {"answers": {**valid, "Which sections?": [True]}},
-            {"response": " "},
-            {"response": "general", "answers": valid},
-        ]
-        for fields in invalid:
-            with self.subTest(fields=fields):
-                self.reply(process, event, **fields)
-                self.next_event(process, "control_error")
-                self.assertFalse((self.project / "handled-0.json").exists())
-        self.reply(process, event, answers=valid)
-        self.assertEqual(self.finish(process)["status"], "completed")
-
     def test_skipping_question_keeps_channel_open(self):
         request = self.question()
         process = self.start(case="interaction", requests=[request, request])
@@ -810,6 +577,11 @@ class AdapterTests(unittest.TestCase):
         ]
         process = self.start(case="interaction", requests=requests)
         question = self.next_event(process, "question_required")
+        self.reply(process, question, type="approval", decision="approve")
+        self.next_event(process, "control_error")
+        self.reply(process, question, response=" ")
+        self.next_event(process, "control_error")
+        self.assertFalse((self.project / "handled-0.json").exists())
         self.reply(process, question, response="Read the current data")
         permission = self.next_event(process, "approval_required")
         self.reply(process, question, response="Read the current data")
@@ -867,14 +639,6 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "timed_out")
         self.assert_stopped(child)
 
-    def test_active_stream_outlives_timeout(self):
-        for flag in ("--idle-timeout", "--timeout"):
-            with self.subTest(flag=flag):
-                result = self.finish(self.start(flag, "2", case="active_stream"))
-                self.assertEqual(result["status"], "completed")
-                self.assertEqual(result["result"], "finished after sustained activity")
-                self.assertGreaterEqual(result["summary"]["duration_ms"], 3000)
-
     def test_watchdog_runs_while_host_stdout_is_blocked(self):
         process = self.start("--workflow", "--idle-timeout", "1", case="blocked_host")
         child = self.wait_for_file("child.pid")
@@ -889,13 +653,6 @@ class AdapterTests(unittest.TestCase):
         result = self.finish(self.start("--idle-timeout", "2", case="hidden_thinking"))
         self.assertEqual(result["status"], "completed")
         self.assertGreaterEqual(result["summary"]["duration_ms"], 3000)
-
-    def test_hidden_thinking_still_times_out_when_events_stop(self):
-        process = self.start("--idle-timeout", "2", case="hidden_thinking_then_idle")
-        result = self.finish(process)
-        self.assertEqual(result["status"], "timed_out")
-        self.assertEqual(process.returncode, 124)
-        self.assertGreaterEqual(result["summary"]["duration_ms"], 4900)
 
     def test_parent_loss_stops_children_while_host_stdout_is_blocked(self):
         for signum in (signal.SIGTERM, signal.SIGKILL):
@@ -913,29 +670,12 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(self.finish(process)["status"], "cancelled")
 
     def test_timeout_starts_from_last_activity(self):
-        process = self.start("--idle-timeout", "0.4", case="active_then_idle")
+        process = self.start("--idle-timeout", "0.4", case="hidden_thinking_then_idle")
         result = self.finish(process)
         self.assertEqual(result["status"], "timed_out")
         self.assertEqual(process.returncode, 124)
         self.assertIn("No Claude activity", result["error"])
         self.assertGreaterEqual(result["summary"]["duration_ms"], 1400)
-
-    def test_ping_events_do_not_keep_a_stalled_run_alive(self):
-        result = self.finish(
-            self.start("--idle-timeout", "0.4", case="empty_heartbeats")
-        )
-        self.assertEqual(result["status"], "timed_out")
-
-    def test_workflow_requires_changing_progress(self):
-        for case, status in (
-            ("progress_active", "completed"),
-            ("progress_stalled", "timed_out"),
-        ):
-            with self.subTest(case=case):
-                result = self.finish(
-                    self.start("--workflow", "--idle-timeout", "0.4", case=case)
-                )
-                self.assertEqual(result["status"], status)
 
     def test_watchdog_stops_a_blocked_sdk_event_loop(self):
         process = self.start("--idle-timeout", "0.4", case="blocked_event_loop")

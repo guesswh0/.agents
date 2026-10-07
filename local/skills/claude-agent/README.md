@@ -175,14 +175,14 @@ flowchart LR
 | [scripts/install_runtime.py](scripts/install_runtime.py) | Local Python runtime setup. |
 | [scripts/requirements.txt](scripts/requirements.txt) | Pinned SDK dependency. |
 | [agents/openai.yaml](agents/openai.yaml) | Skill display name and description; not Claude agent definitions. |
-| [tests/](tests/) | Adapter tests and a fake SDK. |
+| [tests/](tests/) | Adapter rules and process tests using real SDK message types. |
 
 ## Development checks
 
-Tests use a fake SDK and CLI without contacting a model:
+Install the skill runtime first. Tests use its SDK types and replace `query` with local scenarios; no model is contacted. Direct tests cover adapter rules, while subprocess tests cover input exchange, process cleanup, and the watchdog. SDK permission policies are not simulated.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
+PYTHONDONTWRITEBYTECODE=1 local/skills/claude-agent/.venv/bin/python -B -m unittest discover \
   -s local/skills/claude-agent/tests -v
 ```
 

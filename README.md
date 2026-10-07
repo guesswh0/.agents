@@ -29,5 +29,6 @@ See [claude-agent](local/skills/claude-agent/README.md) for its Python runtime s
 
 ```sh
 python3 -B -m unittest discover -s tests -v
-python3 -B -m unittest discover -s local/skills/claude-agent/tests -v
+local/skills/claude-agent/.venv/bin/python -B -m unittest discover \
+  -s local/skills/claude-agent/tests -v
 ```
