@@ -131,7 +131,47 @@ class AdapterTests(unittest.TestCase):
             events,
         )
         self.assertNotIn(b"Traceback", errors)
-        return results[0]
+        result = results[0]
+        if result["status"] not in ("invalid_input", "history_unwritable"):
+            self.assertTrue(
+                {
+                    "result",
+                    "models",
+                    "workflows",
+                    "permission_denials",
+                    "summary",
+                    "answer_file",
+                    "presentation_warnings",
+                }
+                <= result.keys(),
+                result,
+            )
+            self.assertTrue(
+                {
+                    "title",
+                    "kind",
+                    "configurations",
+                    "tokens",
+                    "duration_ms",
+                    "agent_count",
+                    "workflows",
+                }
+                <= result["summary"].keys(),
+                result,
+            )
+            if process.returncode >= 0:
+                self.assertEqual(
+                    process.returncode,
+                    {
+                        "completed": 0,
+                        "dependency_missing": 2,
+                        "denied": 3,
+                        "needs_permission": 3,
+                        "timed_out": 124,
+                        "cancelled": 130,
+                    }.get(result["status"], 1),
+                )
+        return result
 
     def wait_for_file(self, name):
         path = self.project / name
@@ -303,9 +343,56 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(result["result"])
         self.assertTrue(result["presentation_warnings"])
 
+    def test_summary_failure_preserves_status_and_answer_export(self):
+        fault = self.root / "fault"
+        fault.mkdir()
+        (fault / "sitecustomize.py").write_text(
+            "import sys\n"
+            "if sys.argv[0].endswith('_supervisor.py'):\n"
+            f"    sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+            "    import _result\n"
+            "    def fail(*args):\n"
+            "        raise RuntimeError('summary unavailable')\n"
+            "    _result.execution_summary = fail\n"
+        )
+        self.env["PYTHONPATH"] = str(fault) + os.pathsep + str(FAKE_SDK)
+        for workflow in (False, True):
+            with self.subTest(workflow=workflow):
+                result = self.finish(
+                    self.start(
+                        *(["--workflow"] if workflow else []),
+                        case="workflow_metrics" if workflow else "success",
+                        workflow_permission="allow",
+                    )
+                )
+                self.assertEqual(result["status"], "completed")
+                self.assertTrue(result["result"])
+                self.assertIsNone(result["summary"]["tokens"])
+                self.assertIn("summary unavailable", result["presentation_warnings"][0])
+                if workflow:
+                    self.assertEqual(result["summary"]["kind"], "workflow")
+                    self.assertIsNone(result["summary"]["agent_count"])
+                    self.assertIsNone(result["answer_file"])
+                else:
+                    self.assertEqual(
+                        Path(result["answer_file"]).read_bytes(),
+                        result["result"].encode("utf-8"),
+                    )
+
     def test_failed_agent_does_not_export_successful_answer(self):
         result = self.finish(self.start(case="api_error"))
         self.assertIsNone(result["answer_file"])
+
+    def test_missing_sdk_and_worker_crash_have_a_summary(self):
+        for case, status in (
+            ("missing_sdk", "dependency_missing"),
+            ("crash", "failed"),
+        ):
+            with self.subTest(case=case):
+                result = self.finish(self.start(case=case))
+                self.assertEqual(result["status"], status)
+                self.assertIsNone(result["summary"]["tokens"])
+                self.assertIsNone(result["answer_file"])
 
     def test_unset_config_directory_stays_unset_for_native_auth(self):
         spec = importlib.util.spec_from_file_location("entrypoint", ADAPTER)
@@ -856,6 +943,20 @@ class AdapterTests(unittest.TestCase):
         result = self.finish(process)
         self.assertEqual(result["status"], "timed_out")
         self.assertEqual(process.returncode, 124)
+        self.assertEqual(result["summary"]["title"], "Review this project")
+        self.assertIsNone(result["summary"]["tokens"])
+        self.assertIsNone(result["summary"]["duration_ms"])
+        self.assertIsNone(result["answer_file"])
+        self.assert_stopped(pid)
+
+    def test_watchdog_stops_worker_that_hangs_after_returning_answer(self):
+        process = self.start("--idle-timeout", "0.4", case="blocked_exit")
+        pid = self.wait_for_file("sdk.pid")
+        result = self.finish(process)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertTrue(result["result"])
+        self.assertEqual(result["summary"]["tokens"], 190)
+        self.assertIsNone(result["answer_file"])
         self.assert_stopped(pid)
 
     def test_answer_resets_the_idle_budget_after_user_wait(self):

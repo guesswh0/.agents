@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import json
 import os
 import time
@@ -15,12 +16,19 @@ from .types import (
     TaskProgressMessage,
 )
 
+if os.environ.get("FAKE_SDK_CASE") == "missing_sdk":
+    raise ImportError("SDK unavailable")
+
 
 async def query(prompt, options):
     cwd = Path(options.cwd)
     case = os.environ.get("FAKE_SDK_CASE", "success")
     session = options.resume or options.session_id
     (cwd / "sdk.pid").write_text(str(os.getpid()))
+    if case == "crash":
+        os._exit(17)
+    if case == "blocked_exit":
+        atexit.register(time.sleep, 60)
     selected = {
         key: getattr(options, key, None)
         for key in [

@@ -139,18 +139,31 @@ def workflow_summaries(job, tasks):
     return summaries, warnings
 
 
-def execution_summary(job, latest, tasks, duration_ms, models):
+def base_summary(job, tasks, duration_ms, models):
+    workflow = job["workflow"] or bool(tasks)
     summary = {
         "title": job.get("title") or job["prompt"].strip().splitlines()[0][:120],
-        "kind": "workflow" if job["workflow"] or tasks else "agent",
+        "kind": "workflow" if workflow else "agent",
         "configurations": configurations(
             [{"model": model, "effort": job["effort"]} for model in models]
         ),
-        "tokens": tokens(getattr(latest, "usage", None)),
+        "tokens": None,
         "duration_ms": duration_ms,
         "agent_count": 1,
         "workflows": [],
     }
+    if workflow:
+        summary.update(
+            configurations=[],
+            duration_ms=None,
+            agent_count=None,
+            token_scope="workflow_agents",
+        )
+    return summary
+
+
+def execution_summary(job, usage, tasks, duration_ms, models):
+    summary = base_summary(job, tasks, duration_ms, models)
     warnings = []
     if summary["kind"] == "workflow":
         workflows, warnings = workflow_summaries(job, tasks)
@@ -162,6 +175,8 @@ def execution_summary(job, latest, tasks, duration_ms, models):
             agent_count=total(workflow["agent_count"] for workflow in workflows),
             token_scope="workflow_agents",
         )
+    else:
+        summary["tokens"] = tokens(usage)
     return summary, warnings
 
 

@@ -9,7 +9,6 @@ import time
 import uuid
 import warnings
 
-from _presentation import execution_summary, save_answer
 from _activity import Activity
 
 
@@ -329,70 +328,26 @@ class Results:
                     usage=message.usage,
                 )
 
-    def finish(self, approvals, reason=None, error=None):
+    def outcome(self, approvals, reason=None, error=None):
         latest = self.latest
-        fields = {
-            "result": latest.result if latest else "",
+        return {
+            "latest": {
+                key: getattr(latest, key, None)
+                for key in ("result", "is_error", "subtype", "errors", "usage")
+            }
+            if latest is not None
+            else None,
             "models": sorted(self.models),
+            "assistant_models": sorted(self.assistant_models),
             "workflows": self.tasks,
             "permission_denials": self.denials + approvals.denials,
+            "approval_ending": approvals.ending,
+            "result_sequence": self.result_sequence,
+            "completion_sequence": self.completion_sequence,
+            "duration_ms": round(approvals.clock.elapsed() * 1000),
+            "reason": reason,
+            "error": error,
         }
-        if reason:
-            status = reason
-        elif error:
-            status = "failed"
-        elif approvals.ending:
-            status = approvals.ending[0]
-        elif fields["permission_denials"]:
-            status = "needs_permission"
-        elif latest is None or latest.is_error or latest.subtype != "success":
-            status = "failed"
-            error = (
-                getattr(latest, "errors", None)
-                or "Claude returned no successful result"
-            )
-        elif self.job["workflow"] and not self.tasks:
-            status, error = "workflow_not_started", "No workflow launch was observed"
-        elif (
-            any(task["status"] != "completed" for task in self.tasks.values())
-            or self.result_sequence < self.completion_sequence
-        ):
-            status, error = (
-                "incomplete",
-                "The workflow or its final synthesis did not complete",
-            )
-        else:
-            status = "completed"
-        if error:
-            fields["error"] = error
-        fields["summary"], fields["presentation_warnings"] = execution_summary(
-            self.job,
-            latest,
-            self.tasks,
-            round(approvals.clock.elapsed() * 1000),
-            self.assistant_models or self.models,
-        )
-        fields["answer_file"] = None
-        if (
-            status == "completed"
-            and fields["summary"]["kind"] == "agent"
-            and isinstance(fields["result"], str)
-            and fields["result"]
-        ):
-            try:
-                fields["answer_file"] = save_answer(self.job, fields["result"])
-            except OSError as exc:
-                fields["presentation_warnings"].append(
-                    f"Could not save Claude's answer: {exc}"
-                )
-        emit(self.job["base"], "result", status=status, **fields)
-        return {
-            "completed": 0,
-            "denied": 3,
-            "needs_permission": 3,
-            "timed_out": 124,
-            "cancelled": 130,
-        }.get(status, 1)
 
 
 async def run(job, sdk):
@@ -459,7 +414,7 @@ async def run(job, sdk):
         error = str(exc)
     finally:
         approvals.close()
-    return results.finish(approvals, reason, error)
+    return results.outcome(approvals, reason, error)
 
 
 def main():
@@ -486,16 +441,16 @@ def main():
     except ImportError:
         emit(
             job["base"],
-            "result",
-            status="dependency_missing",
+            "_outcome",
+            reason="dependency_missing",
             error="Run scripts/install_runtime.py to install the pinned Claude Agent SDK.",
         )
-        return 2
+        return
     try:
-        return asyncio.run(run(job, sdk))
+        outcome = asyncio.run(run(job, sdk))
     except Exception as exc:
-        emit(job["base"], "result", status="failed", error=str(exc))
-        return 1
+        outcome = {"error": str(exc)}
+    emit({}, "_outcome", **outcome)
 
 
 if __name__ == "__main__":

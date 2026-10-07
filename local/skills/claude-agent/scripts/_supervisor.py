@@ -8,6 +8,7 @@ import sys
 import time
 
 from _output import EventOutput
+from _result import finalize
 
 
 def signal_group(pid, signum):
@@ -28,7 +29,8 @@ def group_exists(pid):
 def supervise(lease_fd, job, output):
     reader, writer = os.pipe()
     process = None
-    final = False
+    outcome = None
+    error = None
     reason = None
     deadline = None
     buffer = b""
@@ -85,22 +87,19 @@ def supervise(lease_fd, job, output):
                                 last_activity = time.monotonic()
                             elif kind == "_shutdown":
                                 stop(event["status"])
-                            elif not final:
-                                if kind == "result" and reason == "timed_out":
-                                    event.update(
-                                        status="timed_out", error=timeout_error
-                                    )
-                                output.send(event)
-                                final = kind == "result"
+                            elif outcome is None:
+                                if kind == "_outcome":
+                                    outcome = event
+                                else:
+                                    output.send(event)
                 if (
-                    not final
-                    and not input_wait
+                    not input_wait
                     and time.monotonic() - last_activity >= job["idle_timeout"]
                 ):
                     stop("timed_out")
                 exited = process.poll() is not None
                 if exited and group_exists(process.pid):
-                    stop(reason or "failed")
+                    stop(reason or ("failed" if outcome is None else None))
                 if deadline is not None and time.monotonic() >= deadline:
                     signal_group(process.pid, signal.SIGKILL)
                 if exited and not stdout_open:
@@ -108,24 +107,14 @@ def supervise(lease_fd, job, output):
                         deadline is not None and time.monotonic() >= deadline
                     ):
                         break
-            if not final:
-                output.send(
-                    {
-                        **job["base"],
-                        "type": "result",
-                        "status": reason or "failed",
-                        "error": timeout_error
-                        if reason == "timed_out"
-                        else "SDK worker ended before its final result",
-                    }
-                )
-            if reason == "timed_out":
-                return 124
-            return (
-                process.returncode
-                if final
-                else {"cancelled": 130, "timed_out": 124}.get(reason, 1)
-            )
+            if outcome is None:
+                error = "SDK worker ended before its final result"
+            elif process.returncode and reason is None:
+                error = f"SDK worker exited with code {process.returncode}"
+        except BrokenPipeError:
+            raise
+        except Exception as exc:
+            error = str(exc)
         finally:
             if process is not None:
                 signal_group(process.pid, signal.SIGKILL)
@@ -134,6 +123,9 @@ def supervise(lease_fd, job, output):
             for fd in (reader, writer):
                 if fd is not None:
                     os.close(fd)
+    if reason == "timed_out":
+        error = timeout_error
+    return finalize(job, outcome, reason, error)
 
 
 def main():
@@ -143,14 +135,15 @@ def main():
     output = EventOutput(sys.stdout.fileno())
     # the launcher alone owns the lease writer, so even sigkill closes it
     try:
-        return supervise(lease_fd, job, output)
+        event, exit_code = supervise(lease_fd, job, output)
+        output.send(event)
+        return exit_code
     except BrokenPipeError:
         return 130
     except Exception as exc:
-        output.send(
-            {**job["base"], "type": "result", "status": "failed", "error": str(exc)}
-        )
-        return 1
+        event, exit_code = finalize(job, error=str(exc))
+        output.send(event)
+        return exit_code
     finally:
         os.close(lease_fd)
         output.close()

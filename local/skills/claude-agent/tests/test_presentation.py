@@ -2,7 +2,6 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 import uuid
 
@@ -80,7 +79,7 @@ class PresentationTests(unittest.TestCase):
     def summary(self, tasks=None):
         return presentation.execution_summary(
             self.job,
-            SimpleNamespace(usage={"input_tokens": 9000, "output_tokens": 1000}),
+            {"input_tokens": 9000, "output_tokens": 1000},
             tasks
             if tasks is not None
             else {"current": {"status": "completed", "description": "audit"}},
@@ -149,16 +148,14 @@ class PresentationTests(unittest.TestCase):
 
     def test_single_agent_cache_usage_unknown_fields_and_model_filtering(self):
         self.job["workflow"] = False
-        result = SimpleNamespace(
-            usage={
-                "input_tokens": 10,
-                "output_tokens": 3,
-                "cache_read_input_tokens": 20,
-                "cache_creation_input_tokens": 7,
-            }
-        )
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_read_input_tokens": 20,
+            "cache_creation_input_tokens": 7,
+        }
         summary, _ = presentation.execution_summary(
-            self.job, result, {}, 40, ["actual", "<synthetic>"]
+            self.job, usage, {}, 40, ["actual", "<synthetic>"]
         )
         self.assertEqual(summary["tokens"], 40)
         self.assertEqual(
