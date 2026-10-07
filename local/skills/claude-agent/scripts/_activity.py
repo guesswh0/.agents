@@ -17,6 +17,8 @@ class Activity:
             event = message.event
             if event.get("type") == "content_block_delta":
                 delta = event.get("delta", {})
+                if delta.get("type") == "thinking_delta":
+                    return True
                 return any(
                     delta.get(key)
                     for key in ("text", "thinking", "partial_json", "signature")

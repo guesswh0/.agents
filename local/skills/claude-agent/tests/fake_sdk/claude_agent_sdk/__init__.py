@@ -47,20 +47,32 @@ async def query(prompt, options):
         )
         time.sleep(60)
         return
-    if case in {"active_stream", "active_then_idle", "empty_heartbeats"}:
+    if case in {
+        "active_stream",
+        "active_then_idle",
+        "empty_heartbeats",
+        "hidden_thinking",
+        "hidden_thinking_then_idle",
+    }:
         assert options.include_partial_messages is True
-        iterations, interval = (60, 0.05) if case == "active_stream" else (12, 0.1)
+        hidden = case in {"hidden_thinking", "hidden_thinking_then_idle"}
+        iterations, interval = (
+            (60, 0.05) if case == "active_stream" or hidden else (12, 0.1)
+        )
         for _ in range(iterations):
             yield StreamEvent(
                 event={"type": "ping"}
                 if case == "empty_heartbeats"
                 else {
                     "type": "content_block_delta",
-                    "delta": {"type": "thinking_delta", "thinking": "working"},
+                    "delta": {
+                        "type": "thinking_delta",
+                        "thinking": "" if hidden else "working",
+                    },
                 }
             )
             await asyncio.sleep(interval)
-        if case == "active_then_idle":
+        if case in {"active_then_idle", "hidden_thinking_then_idle"}:
             await asyncio.sleep(30)
         yield ResultMessage(
             session_id=session, result="finished after sustained activity"

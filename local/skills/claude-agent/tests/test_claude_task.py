@@ -795,6 +795,18 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "timed_out")
         self.assertEqual(process.returncode, 124)
 
+    def test_hidden_thinking_outlives_timeout(self):
+        result = self.finish(self.start("--idle-timeout", "2", case="hidden_thinking"))
+        self.assertEqual(result["status"], "completed")
+        self.assertGreaterEqual(result["summary"]["duration_ms"], 3000)
+
+    def test_hidden_thinking_still_times_out_when_events_stop(self):
+        process = self.start("--idle-timeout", "2", case="hidden_thinking_then_idle")
+        result = self.finish(process)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(process.returncode, 124)
+        self.assertGreaterEqual(result["summary"]["duration_ms"], 4900)
+
     def test_parent_loss_stops_children_while_host_stdout_is_blocked(self):
         for signum in (signal.SIGTERM, signal.SIGKILL):
             with self.subTest(signal=signum):
