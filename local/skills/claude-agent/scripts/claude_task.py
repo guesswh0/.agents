@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from dataclasses import asdict
 import argparse
 import json
 import math
@@ -11,6 +12,10 @@ import subprocess
 import sys
 import tempfile
 import uuid
+
+
+if sys.version_info >= (3, 11):
+    from _contracts import Job
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -58,7 +63,9 @@ def parse_args():
         choices=["low", "medium", "high", "xhigh", "max"],
         help="override Claude's configured effort",
     )
-    parser.add_argument("--access", choices=["none", "read", "edit"], default="read")
+    parser.add_argument(
+        "--access", choices=["none", "read", "edit"], default=Job.access
+    )
     parser.add_argument("--allow-command", action="append", default=[], metavar="RULE")
     parser.add_argument(
         "--permission-mode",
@@ -74,11 +81,14 @@ def parse_args():
         "--timeout",
         dest="idle_timeout",
         type=positive_seconds,
-        default=900,
+        default=Job.idle_timeout,
         help="seconds without Claude activity, excluding user-input waits",
     )
     parser.add_argument(
-        "--input-timeout", "--approval-timeout", type=positive_seconds, default=3600
+        "--input-timeout",
+        "--approval-timeout",
+        type=positive_seconds,
+        default=Job.input_timeout,
     )
     args = parser.parse_args()
     if args.access == "none" and args.allow_command:
@@ -105,12 +115,6 @@ def emit_error(base, status, error):
 
 def prepare(args):
     cwd = args.cwd.expanduser().resolve()
-    base = {
-        "session_id": args.resume or str(uuid.uuid4()),
-        "cwd": str(cwd),
-        "requested_model": args.model,
-        "effort": args.effort,
-    }
     if not cwd.is_dir():
         raise ValueError("project directory does not exist")
     if args.prompt_file == "-":
@@ -137,18 +141,28 @@ def prepare(args):
     except OSError as exc:
         raise PermissionError("Claude history needs write access: " + str(exc)) from exc
     runtime = SCRIPTS.parent / ".venv" / "bin" / "python"
-    return {
-        **vars(args),
-        "cwd": str(cwd),
-        "config_dir": str(config),
-        "base": base,
-        "prompt": prompt,
-        "cli_path": executable,
-        "claude_env": {"CLAUDE_CONFIG_DIR": str(config)}
+    return Job(
+        session_id=args.resume or str(uuid.uuid4()),
+        cwd=str(cwd),
+        config_dir=str(config),
+        prompt=prompt,
+        cli_path=executable,
+        python=str(runtime) if runtime.is_file() else sys.executable,
+        title=args.title,
+        resume=args.resume,
+        model=args.model,
+        effort=args.effort,
+        context_window=args.context_window,
+        access=args.access,
+        allow_command=args.allow_command,
+        permission_mode=args.permission_mode,
+        workflow=args.workflow,
+        idle_timeout=args.idle_timeout,
+        input_timeout=args.input_timeout,
+        claude_env={"CLAUDE_CONFIG_DIR": str(config)}
         if "CLAUDE_CONFIG_DIR" in os.environ
         else {},
-        "python": str(runtime) if runtime.is_file() else sys.executable,
-    }
+    )
 
 
 def launch(job):
@@ -182,7 +196,7 @@ def launch(job):
         lease_read = job_read = None
         with os.fdopen(job_write, "w", encoding="utf-8") as request:
             job_write = None
-            json.dump(job, request, ensure_ascii=False)
+            json.dump(asdict(job), request, ensure_ascii=False)
         return process.wait()
     finally:
         release()
@@ -208,7 +222,7 @@ def main():
     try:
         return launch(job)
     except (OSError, ValueError) as exc:
-        return emit_error(job["base"], "failed", str(exc))
+        return emit_error(job.base, "failed", str(exc))
 
 
 if __name__ == "__main__":

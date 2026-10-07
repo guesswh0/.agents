@@ -101,8 +101,8 @@ def phase_summaries(document):
 def workflow_summaries(job, tasks):
     documents = {}
     warnings = []
-    projects = Path(job["config_dir"]) / "projects"
-    session = job["base"]["session_id"]
+    projects = Path(job.config_dir) / "projects"
+    session = job.session_id
     try:
         paths = projects.glob(f"*/{session}/workflows/*.json")
         for path in paths:
@@ -140,12 +140,12 @@ def workflow_summaries(job, tasks):
 
 
 def base_summary(job, tasks, duration_ms, models):
-    workflow = job["workflow"] or bool(tasks)
+    workflow = job.workflow or bool(tasks)
     summary = {
-        "title": job.get("title") or job["prompt"].strip().splitlines()[0][:120],
+        "title": job.title or job.prompt.strip().splitlines()[0][:120],
         "kind": "workflow" if workflow else "agent",
         "configurations": configurations(
-            [{"model": model, "effort": job["effort"]} for model in models]
+            [{"model": model, "effort": job.effort} for model in models]
         ),
         "tokens": None,
         "duration_ms": duration_ms,
@@ -181,9 +181,7 @@ def execution_summary(job, usage, tasks, duration_ms, models):
 
 
 def save_answer(job, answer):
-    directory = (
-        Path(job["config_dir"]) / "claude-agent" / "answers" / job["base"]["session_id"]
-    )
+    directory = Path(job.config_dir) / "claude-agent" / "answers" / job.session_id
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{uuid.uuid4()}.md"
     output = path.open("x", encoding="utf-8", newline="")

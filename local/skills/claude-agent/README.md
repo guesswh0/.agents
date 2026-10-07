@@ -168,7 +168,9 @@ flowchart LR
 | [references/results.md](references/results.md) | Chat summary and answer links. |
 | [scripts/claude_task.py](scripts/claude_task.py) | Arguments, environment checks, and launch. |
 | [scripts/_supervisor.py](scripts/_supervisor.py) | Process supervision and event forwarding. |
-| [scripts/_sdk.py](scripts/_sdk.py) | SDK calls, approvals, progress, and final status. |
+| [scripts/_sdk.py](scripts/_sdk.py) | SDK calls, approvals, progress, and observed outcomes. |
+| [scripts/_contracts.py](scripts/_contracts.py) | Job, outcome, and private event definitions shared by the processes. |
+| [scripts/_result.py](scripts/_result.py) | Final status, summary, answer export, and exit code. |
 | [scripts/_activity.py](scripts/_activity.py) | Observable activity detection for the idle watchdog. |
 | [scripts/_output.py](scripts/_output.py) | Buffered host event forwarding independent of watchdog checks. |
 | [scripts/_presentation.py](scripts/_presentation.py) | Native workflow metrics and verbatim answer export. |

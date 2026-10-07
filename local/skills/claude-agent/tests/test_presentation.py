@@ -1,9 +1,18 @@
+from dataclasses import replace
+import sys
+from unittest import mock
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
 import uuid
+
+
+with mock.patch.object(
+    sys, "path", [str(Path(__file__).resolve().parents[1] / "scripts"), *sys.path]
+):
+    from _contracts import Job
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "scripts" / "_presentation.py"
@@ -17,19 +26,22 @@ class PresentationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.job = {
-            "config_dir": str(self.root),
-            "base": {"session_id": str(uuid.uuid4())},
-            "workflow": True,
-            "title": "Check architecture",
-            "prompt": "Review this project",
-            "effort": "high",
-        }
+        self.job = Job(
+            session_id=str(uuid.uuid4()),
+            cwd=str(self.root),
+            config_dir=str(self.root),
+            prompt="Review this project",
+            cli_path="claude",
+            python=sys.executable,
+            title="Check architecture",
+            effort="high",
+            workflow=True,
+        )
         self.directory = (
             self.root
             / "projects"
             / "any-project-key"
-            / self.job["base"]["session_id"]
+            / self.job.session_id
             / "workflows"
         )
         self.directory.mkdir(parents=True)
@@ -147,7 +159,7 @@ class PresentationTests(unittest.TestCase):
         self.assertIsNone(phases[-1]["title"])
 
     def test_single_agent_cache_usage_unknown_fields_and_model_filtering(self):
-        self.job["workflow"] = False
+        self.job = replace(self.job, workflow=False)
         usage = {
             "input_tokens": 10,
             "output_tokens": 3,

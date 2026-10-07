@@ -1,4 +1,6 @@
 import argparse
+from dataclasses import asdict, replace
+import json
 from contextlib import redirect_stderr
 import io
 from pathlib import Path
@@ -20,6 +22,7 @@ from sdk_messages import (
 with mock.patch.object(
     sys, "path", [str(Path(__file__).resolve().parents[1] / "scripts"), *sys.path]
 ):
+    from _contracts import Job, Outcome
     from _activity import Activity
     from _result import finalize
     from _sdk import Approvals, Clock, Results
@@ -118,15 +121,16 @@ class AdapterRulesTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.job = {
-            "base": {"session_id": SESSION},
-            "config_dir": str(self.root),
-            "cwd": str(self.root),
-            "workflow": False,
-            "title": "Review",
-            "prompt": "Review this project",
-            "effort": "high",
-        }
+        self.job = Job(
+            session_id=SESSION,
+            cwd=str(self.root),
+            config_dir=str(self.root),
+            prompt="Review this project",
+            cli_path="claude",
+            python=sys.executable,
+            title="Review",
+            effort="high",
+        )
 
     def observed(self, messages):
         results = Results(self.job, sdk)
@@ -134,6 +138,27 @@ class AdapterRulesTests(unittest.TestCase):
             for message in messages:
                 results.accept(message)
         return results.outcome(Approvals(self.job, Clock(), sdk))
+
+    def test_pipe_roundtrip_preserves_job_and_partial_outcomes(self):
+        job = replace(
+            self.job, prompt="Кедр", context_window=253123, allow_command=["git diff *"]
+        )
+        decoded = Job(**json.loads(json.dumps(asdict(job))))
+        self.assertEqual(decoded, job)
+        self.assertEqual(decoded.base["requested_model"], job.model)
+        self.assertNotIn("base", asdict(job))
+        self.assertNotIn("prompt_file", asdict(job))
+        complete = self.observed([workflow_started(), result_message(result="Кедр")])
+        for outcome in (complete, Outcome(reason="dependency_missing"), Outcome()):
+            with self.subTest(outcome=outcome):
+                restored = Outcome.from_event(
+                    json.loads(json.dumps(outcome.to_event()))
+                )
+                self.assertEqual(restored, outcome)
+        event = complete.to_event()
+        event["assistant_modelz"] = []
+        with self.assertRaises(TypeError):
+            Outcome.from_event(event)
 
     def test_result_status_and_export_follow_adapter_rules(self):
         success = result_message(result="answer")
@@ -155,8 +180,8 @@ class AdapterRulesTests(unittest.TestCase):
                 3,
             ),
             (None, {"reason": "dependency_missing"}, "dependency_missing", 2),
-            ({"approval_ending": ["denied", "closed"]}, {}, "denied", 3),
-            ({"approval_ending": ["timed_out", "expired"]}, {}, "timed_out", 124),
+            (Outcome(approval_ending=("denied", "closed")), {}, "denied", 3),
+            (Outcome(approval_ending=("timed_out", "expired")), {}, "timed_out", 124),
             (self.observed([success]), {"reason": "cancelled"}, "cancelled", 130),
             (self.observed([success]), {"reason": "timed_out"}, "timed_out", 124),
         ):
@@ -169,7 +194,7 @@ class AdapterRulesTests(unittest.TestCase):
                     self.assertIsNone(event["summary"]["tokens"])
 
     def test_workflow_requires_completion_and_a_later_synthesis(self):
-        self.job["workflow"] = True
+        self.job = replace(self.job, workflow=True)
         start, finish, answer = (
             workflow_started(),
             workflow_finished(),

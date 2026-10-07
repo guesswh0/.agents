@@ -10,6 +10,7 @@ import uuid
 import warnings
 
 from _activity import Activity
+from _contracts import Job, LatestResult, Outcome, WorkerEvent, WorkflowState
 
 
 ACCESS_TOOLS = {
@@ -92,7 +93,7 @@ class Approvals:
             if source and not snapshot.get("script"):
                 path = Path(source).expanduser()
                 if not path.is_absolute():
-                    path = Path(self.job["cwd"]) / path
+                    path = Path(self.job.cwd) / path
                 snapshot["script"] = path.read_text(encoding="utf-8")
             if (
                 not isinstance(snapshot.get("script"), str)
@@ -169,9 +170,9 @@ class Approvals:
             if self.input is None:
                 self.input = InputLines()
             self.clock.pause()
-            emit({}, "_input_wait")
+            emit({}, WorkerEvent.INPUT_WAIT)
             emit(
-                self.job["base"],
+                self.job.base,
                 "question_required" if question else "approval_required",
                 request_id=request_id,
                 input_sha256=digest,
@@ -186,7 +187,7 @@ class Approvals:
                 tool_input=snapshot,
             )
             try:
-                async with asyncio.timeout(self.job["input_timeout"]):
+                async with asyncio.timeout(self.job.input_timeout):
                     while True:
                         line = await self.input.read()
                         if line is None:
@@ -210,7 +211,7 @@ class Approvals:
                         choices = (None, "skip") if question else ("approve", "deny")
                         if not matches or decision.get("decision") not in choices:
                             emit(
-                                self.job["base"],
+                                self.job.base,
                                 "control_error",
                                 error="Response must match the pending request type, ID, and input hash.",
                             )
@@ -222,7 +223,7 @@ class Approvals:
                             )
                             if not isinstance(reason, str):
                                 emit(
-                                    self.job["base"],
+                                    self.job.base,
                                     "control_error",
                                     error="Message must be text",
                                 )
@@ -237,10 +238,10 @@ class Approvals:
                                 else snapshot
                             )
                         except (KeyError, TypeError, ValueError) as exc:
-                            emit(self.job["base"], "control_error", error=str(exc))
+                            emit(self.job.base, "control_error", error=str(exc))
                             continue
                         emit(
-                            self.job["base"],
+                            self.job.base,
                             "answer_accepted" if question else "approval_accepted",
                             request_id=request_id,
                             input_sha256=digest,
@@ -254,7 +255,7 @@ class Approvals:
                 )
             finally:
                 self.clock.resume()
-                emit({}, "_input_resume")
+                emit({}, WorkerEvent.INPUT_RESUME)
 
     def close(self):
         if self.input is not None:
@@ -269,7 +270,7 @@ class Results:
         self.models = set()
         self.assistant_models = set()
         self.denials = []
-        self.tasks = {}
+        self.tasks: dict[str, WorkflowState] = {}
         self.sequence = 0
         self.result_sequence = 0
         self.completion_sequence = 0
@@ -285,7 +286,7 @@ class Results:
         ):
             self.assistant_models.add(message.model)
         if isinstance(message, self.sdk.ResultMessage):
-            if message.session_id != self.job["base"]["session_id"]:
+            if message.session_id != self.job.session_id:
                 raise ValueError("Claude returned a different session ID")
             self.latest = message
             self.result_sequence = self.sequence
@@ -298,7 +299,7 @@ class Results:
                     "description": message.description,
                 }
                 emit(
-                    self.job["base"],
+                    self.job.base,
                     "workflow_started",
                     task_id=message.task_id,
                     description=message.description,
@@ -308,7 +309,7 @@ class Results:
                 self.tasks[message.task_id]["status"] = message.status
                 self.completion_sequence = self.sequence
                 emit(
-                    self.job["base"],
+                    self.job.base,
                     "workflow_finished",
                     task_id=message.task_id,
                     status=message.status,
@@ -321,7 +322,7 @@ class Results:
             ):
                 self.last_progress = time.monotonic()
                 emit(
-                    self.job["base"],
+                    self.job.base,
                     "progress",
                     task_id=message.task_id,
                     description=message.description,
@@ -330,24 +331,27 @@ class Results:
 
     def outcome(self, approvals, reason=None, error=None):
         latest = self.latest
-        return {
-            "latest": {
-                key: getattr(latest, key, None)
-                for key in ("result", "is_error", "subtype", "errors", "usage")
-            }
+        return Outcome(
+            latest=LatestResult(
+                result=latest.result,
+                is_error=latest.is_error,
+                subtype=latest.subtype,
+                errors=latest.errors,
+                usage=latest.usage,
+            )
             if latest is not None
             else None,
-            "models": sorted(self.models),
-            "assistant_models": sorted(self.assistant_models),
-            "workflows": self.tasks,
-            "permission_denials": self.denials + approvals.denials,
-            "approval_ending": approvals.ending,
-            "result_sequence": self.result_sequence,
-            "completion_sequence": self.completion_sequence,
-            "duration_ms": round(approvals.clock.elapsed() * 1000),
-            "reason": reason,
-            "error": error,
-        }
+            models=sorted(self.models),
+            assistant_models=sorted(self.assistant_models),
+            workflows=self.tasks,
+            permission_denials=self.denials + approvals.denials,
+            approval_ending=approvals.ending,
+            result_sequence=self.result_sequence,
+            completion_sequence=self.completion_sequence,
+            duration_ms=round(approvals.clock.elapsed() * 1000),
+            reason=reason,
+            error=error,
+        )
 
 
 async def run(job, sdk):
@@ -355,40 +359,40 @@ async def run(job, sdk):
     approvals = Approvals(job, clock, sdk)
     results = Results(job, sdk)
     activity = Activity(sdk)
-    tools = list(ACCESS_TOOLS[job["access"]])
+    tools = list(ACCESS_TOOLS[job.access])
     allowed = list(tools)
     tools.append("AskUserQuestion")
-    if job["allow_command"]:
+    if job.allow_command:
         tools.append("Bash")
-        allowed.extend("Bash(" + rule + ")" for rule in job["allow_command"])
-    if job["workflow"]:
+        allowed.extend("Bash(" + rule + ")" for rule in job.allow_command)
+    if job.workflow:
         tools.append("Workflow")
     session_env = {"DISABLE_AUTO_COMPACT": "0", "DISABLE_COMPACT": "0"}
-    if job["context_window"] is not None:
-        session_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(job["context_window"])
+    if job.context_window is not None:
+        session_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(job.context_window)
     options = sdk.ClaudeAgentOptions(
-        cli_path=job["cli_path"],
-        cwd=job["cwd"],
-        session_id=None if job["resume"] else job["base"]["session_id"],
-        resume=job["resume"],
-        model=job["model"],
-        effort=job["effort"],
+        cli_path=job.cli_path,
+        cwd=job.cwd,
+        session_id=None if job.resume else job.session_id,
+        resume=job.resume,
+        model=job.model,
+        effort=job.effort,
         tools=tools,
         allowed_tools=allowed,
         system_prompt={"type": "preset", "preset": "claude_code"},
         setting_sources=["user", "project", "local"],
         settings=json.dumps({"autoCompactEnabled": True, "env": session_env}),
-        permission_mode=job["permission_mode"],
-        env={**job["claude_env"], **session_env},
+        permission_mode=job.permission_mode,
+        env={**job.claude_env, **session_env},
         can_use_tool=approvals.decide,
         include_partial_messages=True,
         verbatim_prompts=True,
     )
 
     async def consume():
-        async for message in sdk.query(prompt=job["prompt"], options=options):
+        async for message in sdk.query(prompt=job.prompt, options=options):
             if activity.observe(message):
-                emit({}, "_activity")
+                emit({}, WorkerEvent.ACTIVITY)
             results.accept(message)
 
     task = asyncio.create_task(consume())
@@ -398,14 +402,14 @@ async def run(job, sdk):
         nonlocal reason
         if reason is None and not task.done():
             reason = status
-            emit(job["base"], "_shutdown", status=status)
+            emit(job.base, WorkerEvent.SHUTDOWN, status=status)
             task.cancel()
 
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         loop.add_signal_handler(signum, stop, "cancelled")
     error = None
-    emit(job["base"], "started", workflow=job["workflow"])
+    emit(job.base, "started", workflow=job.workflow)
     try:
         await task
     except asyncio.CancelledError:
@@ -419,25 +423,23 @@ async def run(job, sdk):
 
 def main():
     with os.fdopen(int(sys.argv[1]), encoding="utf-8") as request:
-        job = json.load(request)
+        job = Job(**json.load(request))
     try:
         import claude_agent_sdk as sdk
 
         # file tools are deliberately approved before the permission callback
         warnings.filterwarnings("ignore", category=sdk.CanUseToolShadowedWarning)
     except ImportError:
-        emit(
-            job["base"],
-            "_outcome",
+        outcome = Outcome(
             reason="dependency_missing",
             error="Run scripts/install_runtime.py to install the pinned Claude Agent SDK.",
         )
-        return
-    try:
-        outcome = asyncio.run(run(job, sdk))
-    except Exception as exc:
-        outcome = {"error": str(exc)}
-    emit({}, "_outcome", **outcome)
+    else:
+        try:
+            outcome = asyncio.run(run(job, sdk))
+        except Exception as exc:
+            outcome = Outcome(error=str(exc))
+    print(json.dumps(outcome.to_event(), ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

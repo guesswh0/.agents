@@ -309,7 +309,8 @@ class AdapterTests(unittest.TestCase):
     def test_unset_config_directory_stays_unset_for_native_auth(self):
         spec = importlib.util.spec_from_file_location("entrypoint", ADAPTER)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            spec.loader.exec_module(module)
         environment = {
             key: value for key, value in self.env.items() if key != "CLAUDE_CONFIG_DIR"
         }
@@ -319,7 +320,7 @@ class AdapterTests(unittest.TestCase):
             mock.patch.object(sys, "argv", [str(ADAPTER), *self.command[3:]]),
         ):
             job = module.prepare(module.parse_args())
-        self.assertEqual(job["claude_env"], {})
+        self.assertEqual(job.claude_env, {})
 
     def test_tool_profiles_and_shell_rules(self):
         result = self.finish(

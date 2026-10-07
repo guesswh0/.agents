@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import time
 
+from _contracts import Job, Outcome, WorkerEvent
 from _output import EventOutput
 from _result import finalize
 
@@ -37,12 +39,12 @@ def supervise(lease_fd, job, output):
     stdout_open = True
     last_activity = time.monotonic()
     input_wait = False
-    timeout_error = f"No Claude activity for {job['idle_timeout']:g} seconds."
+    timeout_error = f"No Claude activity for {job.idle_timeout:g} seconds."
     with selectors.DefaultSelector() as selector:
         selector.register(lease_fd, selectors.EVENT_READ, "lease")
         try:
             process = subprocess.Popen(
-                [job["python"], str(Path(__file__).with_name("_sdk.py")), str(reader)],
+                [job.python, str(Path(__file__).with_name("_sdk.py")), str(reader)],
                 pass_fds=(reader,),
                 process_group=0,
                 stdout=subprocess.PIPE,
@@ -51,7 +53,7 @@ def supervise(lease_fd, job, output):
             reader = None
             with os.fdopen(writer, "w", encoding="utf-8") as request:
                 writer = None
-                json.dump(job, request, ensure_ascii=False)
+                json.dump(asdict(job), request, ensure_ascii=False)
             selector.register(process.stdout, selectors.EVENT_READ, "output")
 
             def stop(status):
@@ -78,23 +80,23 @@ def supervise(lease_fd, job, output):
                             line, buffer = buffer.split(b"\n", 1)
                             event = json.loads(line)
                             kind = event.get("type")
-                            if kind == "_activity":
+                            if kind == WorkerEvent.ACTIVITY:
                                 last_activity = time.monotonic()
-                            elif kind == "_input_wait":
+                            elif kind == WorkerEvent.INPUT_WAIT:
                                 input_wait = True
-                            elif kind == "_input_resume":
+                            elif kind == WorkerEvent.INPUT_RESUME:
                                 input_wait = False
                                 last_activity = time.monotonic()
-                            elif kind == "_shutdown":
+                            elif kind == WorkerEvent.SHUTDOWN:
                                 stop(event["status"])
                             elif outcome is None:
-                                if kind == "_outcome":
-                                    outcome = event
+                                if kind == WorkerEvent.OUTCOME:
+                                    outcome = Outcome.from_event(event)
                                 else:
                                     output.send(event)
                 if (
                     not input_wait
-                    and time.monotonic() - last_activity >= job["idle_timeout"]
+                    and time.monotonic() - last_activity >= job.idle_timeout
                 ):
                     stop("timed_out")
                 exited = process.poll() is not None
@@ -131,7 +133,7 @@ def supervise(lease_fd, job, output):
 def main():
     lease_fd, job_fd = map(int, sys.argv[1:])
     with os.fdopen(job_fd, encoding="utf-8") as request:
-        job = json.load(request)
+        job = Job(**json.load(request))
     output = EventOutput(sys.stdout.fileno())
     # the launcher alone owns the lease writer, so even sigkill closes it
     try:
