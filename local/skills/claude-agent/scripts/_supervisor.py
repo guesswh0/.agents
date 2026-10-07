@@ -28,13 +28,36 @@ def group_exists(pid):
         return False
 
 
+class Shutdown:
+    def __init__(self, pid):
+        self.pid = pid
+        self.reason = None
+        self.deadline = None
+
+    def request(self, reason):
+        # once cleanup starts, later signals must not change its cause
+        if self.deadline is None:
+            self.reason = reason
+            self.cleanup()
+
+    def cleanup(self):
+        if self.deadline is None:
+            self.deadline = time.monotonic() + 3
+            signal_group(self.pid, signal.SIGTERM)
+
+    def force_if_due(self):
+        if self.deadline is None or time.monotonic() < self.deadline:
+            return False
+        signal_group(self.pid, signal.SIGKILL)
+        return True
+
+
 def supervise(lease_fd, job, output):
     reader, writer = os.pipe()
     process = None
     outcome = None
     error = None
-    reason = None
-    deadline = None
+    shutdown = None
     buffer = b""
     stdout_open = True
     last_activity = time.monotonic()
@@ -49,6 +72,7 @@ def supervise(lease_fd, job, output):
                 process_group=0,
                 stdout=subprocess.PIPE,
             )
+            shutdown = Shutdown(process.pid)
             os.close(reader)
             reader = None
             with os.fdopen(writer, "w", encoding="utf-8") as request:
@@ -56,20 +80,13 @@ def supervise(lease_fd, job, output):
                 json.dump(asdict(job), request, ensure_ascii=False)
             selector.register(process.stdout, selectors.EVENT_READ, "output")
 
-            def stop(status):
-                nonlocal deadline, reason
-                if deadline is None:
-                    reason = status
-                    deadline = time.monotonic() + 3
-                    signal_group(process.pid, signal.SIGTERM)
-
             while True:
                 output.check()
                 for key, _ in selector.select(0.1):
                     if key.data == "lease":
                         if not os.read(lease_fd, 1):
                             selector.unregister(lease_fd)
-                            stop("cancelled")
+                            shutdown.request("cancelled")
                     else:
                         chunk = os.read(process.stdout.fileno(), 65536)
                         if not chunk:
@@ -88,7 +105,7 @@ def supervise(lease_fd, job, output):
                                 input_wait = False
                                 last_activity = time.monotonic()
                             elif kind == WorkerEvent.SHUTDOWN:
-                                stop(event["status"])
+                                shutdown.request(event["status"])
                             elif outcome is None:
                                 if kind == WorkerEvent.OUTCOME:
                                     outcome = Outcome.from_event(event)
@@ -98,20 +115,23 @@ def supervise(lease_fd, job, output):
                     not input_wait
                     and time.monotonic() - last_activity >= job.idle_timeout
                 ):
-                    stop("timed_out")
+                    shutdown.request("timed_out")
                 exited = process.poll() is not None
                 if exited and group_exists(process.pid):
-                    stop(reason or ("failed" if outcome is None else None))
-                if deadline is not None and time.monotonic() >= deadline:
-                    signal_group(process.pid, signal.SIGKILL)
-                if exited and not stdout_open:
-                    if not group_exists(process.pid) or (
-                        deadline is not None and time.monotonic() >= deadline
-                    ):
-                        break
+                    if outcome is None:
+                        shutdown.request("failed")
+                    else:
+                        shutdown.cleanup()
+                forced = shutdown.force_if_due()
+                if (
+                    exited
+                    and not stdout_open
+                    and (forced or not group_exists(process.pid))
+                ):
+                    break
             if outcome is None:
                 error = "SDK worker ended before its final result"
-            elif process.returncode and reason is None:
+            elif process.returncode and shutdown.reason is None:
                 error = f"SDK worker exited with code {process.returncode}"
         except BrokenPipeError:
             raise
@@ -125,6 +145,7 @@ def supervise(lease_fd, job, output):
             for fd in (reader, writer):
                 if fd is not None:
                     os.close(fd)
+    reason = shutdown.reason if shutdown is not None else None
     if reason == "timed_out":
         error = timeout_error
     return finalize(job, outcome, reason, error)

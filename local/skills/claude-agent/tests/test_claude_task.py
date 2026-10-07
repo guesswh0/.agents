@@ -700,6 +700,15 @@ class AdapterTests(unittest.TestCase):
         self.assertIsNone(result["answer_file"])
         self.assert_stopped(pid)
 
+    def test_success_survives_cleanup_of_remaining_children(self):
+        process = self.start(case="orphan_child")
+        child = self.wait_for_file("child.pid")
+        result = self.finish(process)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(process.returncode, 0)
+        self.assertIsNotNone(result["answer_file"])
+        self.assert_stopped(child)
+
     def test_answer_resets_the_idle_budget_after_user_wait(self):
         process = self.start(
             "--idle-timeout", "0.4", case="slow_question", requests=[self.question()]

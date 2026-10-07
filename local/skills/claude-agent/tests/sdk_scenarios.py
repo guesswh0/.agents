@@ -3,6 +3,7 @@ import atexit
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 
 from claude_agent_sdk import ToolPermissionContext
@@ -13,6 +14,9 @@ from sdk_messages import (
     workflow_started,
     workflow_finished,
 )
+
+# retain handles until worker exit; the supervisor owns cleanup
+children = []
 
 
 async def interact(options, requests):
@@ -106,6 +110,10 @@ async def query(prompt, options):
         os._exit(17)
     if case == "blocked_exit":
         atexit.register(time.sleep, 60)
+    elif case == "orphan_child":
+        children.append(subprocess.Popen([options.cli_path], cwd=cwd))
+        while not (cwd / "child.pid").exists():
+            await asyncio.sleep(0.01)
     elif case == "blocked_event_loop":
         time.sleep(60)
         return
