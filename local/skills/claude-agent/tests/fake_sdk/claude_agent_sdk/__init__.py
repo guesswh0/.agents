@@ -33,6 +33,7 @@ async def query(prompt, options):
             "system_prompt",
             "setting_sources",
             "settings",
+            "verbatim_prompts",
             "env",
             "session_id",
             "resume",

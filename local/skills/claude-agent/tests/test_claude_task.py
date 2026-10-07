@@ -152,7 +152,7 @@ class AdapterTests(unittest.TestCase):
         self.fail(f"process {pid} is still running")
 
     def test_normal_result_and_literal_prompt(self):
-        prompt = "Кедр $(touch injected) `touch injected`"
+        prompt = "/compact\nКедр @/tmp/reference.md $(touch injected) `touch injected`"
         self.brief.write_text(prompt)
         result = self.finish(self.start("--model", "opus", "--effort", "low"))
         self.assertEqual(result["status"], "completed")
@@ -168,6 +168,7 @@ class AdapterTests(unittest.TestCase):
         self.assertIsNone(options["permission_mode"])
         self.assertEqual(options["model"], "opus")
         self.assertEqual(options["effort"], "low")
+        self.assertTrue(options["verbatim_prompts"])
 
     def test_model_and_effort_only_override_when_requested(self):
         cases = [
@@ -192,6 +193,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["session_id"], session)
         self.assertEqual(options["resume"], session)
         self.assertIsNone(options["session_id"])
+        self.assertTrue(options["verbatim_prompts"])
 
     def test_autocompact_is_session_scoped_without_a_context_override(self):
         config = Path(self.env["CLAUDE_CONFIG_DIR"])
@@ -377,6 +379,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(result["workflows"]["task-0"]["status"], "completed")
                 options = json.loads((self.project / "sdk-options.json").read_text())
                 self.assertEqual(options["permission_mode"], mode)
+                self.assertTrue(options["verbatim_prompts"])
                 self.assertEqual(
                     options["setting_sources"], ["user", "project", "local"]
                 )

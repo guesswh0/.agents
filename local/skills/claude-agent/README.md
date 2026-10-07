@@ -77,6 +77,8 @@ python3 "$skill_root/scripts/claude_task.py" --help
 
 `read` includes Read, Glob, and Grep. `edit` also includes Edit and Write. All profiles include AskUserQuestion. These profiles are not a filesystem sandbox. Claude's native settings, hooks, connectors, and permission rules remain active.
 
+Briefs use `verbatim_prompts`: file mentions and slash commands remain literal. Claude's automatic per-turn context is deferred until after its first tool call.
+
 Auto-compaction is enabled for each invocation; saved Claude settings are unchanged.
 
 ### Permissions and questions

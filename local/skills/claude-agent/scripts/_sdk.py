@@ -427,6 +427,7 @@ async def run(job, sdk):
         env={**job["claude_env"], **session_env},
         can_use_tool=approvals.decide,
         include_partial_messages=True,
+        verbatim_prompts=True,
     )
 
     async def consume():

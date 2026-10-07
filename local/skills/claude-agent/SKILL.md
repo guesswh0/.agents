@@ -11,6 +11,8 @@ Run [scripts/claude_task.py](scripts/claude_task.py).
 
 Use the current project's directory unless the task names another directory or worktree. Give Claude the task, relevant context from this chat, allowed changes, and expected result. Claude loads its native project and global `CLAUDE.md` files, including symlink targets; leave those files for Claude to discover.
 
+Briefs are passed verbatim: `@path` and slash commands stay literal. Claude may receive per-turn context such as nested rules and skill listings after its first tool call.
+
 Write a UTF-8 brief in the task's work directory, then invoke the adapter:
 
 ```sh
