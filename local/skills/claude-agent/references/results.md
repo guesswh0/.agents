@@ -1,6 +1,6 @@
 # Results
 
-Use the final event's `summary` and `status` to show a compact Markdown summary in the chat, in the user's language. Keep the task's substantive answer separate from these execution statistics.
+Use the final event's `summary` and `status` to show a compact Markdown summary in the chat, in the user's language. Render the summary directly, without HTML wrappers: this chat displays `<details>` and `<summary>` as literal tags. Keep the task's substantive answer separate from these execution statistics.
 
 ## Single agent
 
@@ -12,11 +12,11 @@ Completed · Opus · high · 24.3k tokens · 1m 12s · Claude's answer
 
 The adapter saves the successful final `result` text verbatim as UTF-8 Markdown. It adds no headings, commentary, or formatting. Each invocation gets a new file under the Claude configuration directory's `claude-agent/answers/<session-id>/`, including resumed sessions. Link only a returned `answer_file`; if it is null, omit the link. An export failure leaves the original `result` available and adds a `presentation_warnings` entry.
 
-A pipeline made of separate Claude invocations has one answer file per successful invocation. Group their summaries by phase and keep each answer link beside its agent. This differs from a native dynamic workflow, whose agents do not get exported Markdown answers.
+For several separate agent runs, use one row per run, keeping each run's task, model, effort, status, metrics, and answer link together, even within the same phase.
 
-## Workflow
+## Native Claude workflow
 
-Show the task title and status, then one row per phase and an overall total:
+Use phase-only aggregation when the adapter reports `summary.kind: workflow`, not merely because an external pipeline has phases. Show the task title and status, then one row per phase and an overall total:
 
 | Phase | Agents | Model · effort | Tokens | Time |
 | --- | ---: | --- | ---: | ---: |

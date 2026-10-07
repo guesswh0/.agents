@@ -35,7 +35,7 @@ For a dynamic workflow, read [references/workflows.md](references/workflows.md) 
 
 Output is newline-delimited JSON. Read until the single final `type: result` event; earlier events are not the answer. Only `status: completed` means success. Verify the returned work against the task, relevant diff, or tests.
 
-Present the compact execution summary using [Results](references/results.md): one line and a link to Claude's verbatim answer for a single agent; phase rows and a total for a workflow. Set `--title` to a short task name in the user's language.
+Present the compact execution summary using [Results](references/results.md): one line for a single agent, one row per separate agent run, and phase totals only for native Claude workflows. Use plain Markdown without HTML wrappers. Set `--title` to a short task name in the user's language.
 
 Keep `session_id`, `cwd`, any explicit model/effort overrides, and a brief task summary in this chat and any context handoff. Continue with the same directory and `--resume SESSION_ID`; calls to one session must be sequential. Separate sessions can handle independent tasks. The final `models` field reports the actual models used.
 

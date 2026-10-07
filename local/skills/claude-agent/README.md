@@ -129,7 +129,7 @@ Permission denial reasons appear in `permission_denials`. An error message, when
 
 Omitted model and effort overrides appear as `null` in the request metadata. This does not report Claude's resolved defaults; use `models` for the actual models used.
 
-The final event also includes `summary`, `answer_file`, and `presentation_warnings`. Codex shows a compact execution summary in the chat: a single agent's model, effort, tokens, duration, and answer link, or workflow phase rows and a total. See [Results](references/results.md) for metric boundaries and the display format.
+The final event also includes `summary`, `answer_file`, and `presentation_warnings`. Codex shows a compact Markdown summary: one line for a single agent, one row per separate agent run, or phase rows and a total for native Claude workflows. See [Results](references/results.md) for metric boundaries and the display format.
 
 For a successful single-agent call, `answer_file` points to an exact UTF-8 copy of Claude's final answer at `~/.claude/claude-agent/answers/<session-id>/<unique-id>.md` (under `CLAUDE_CONFIG_DIR` when set). Resuming a session creates another file. Workflow calls export no answer files; their metrics are read from Claude's existing workflow JSON. Missing native data or an answer export error produces a presentation warning without changing execution success.
 
