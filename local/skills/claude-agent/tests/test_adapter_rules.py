@@ -25,7 +25,7 @@ with mock.patch.object(
     from _contracts import Job, Outcome
     from _activity import Activity
     from _result import finalize
-    from _sdk import Approvals, Clock, Results
+    from _sdk import Approvals, Clock, PendingRequest, Results
     import claude_task
 
 
@@ -272,7 +272,7 @@ class AdapterRulesTests(unittest.TestCase):
                 if summary_fails:
                     self.assertIsNone(event["summary"]["tokens"])
 
-    def test_question_validation_preserves_question_and_rejects_invalid_answers(self):
+    def test_reply_validation_checks_identity_and_preserves_question(self):
         approvals = Approvals(self.job, Clock(), sdk)
         question = {
             "questions": [
@@ -280,16 +280,26 @@ class AdapterRulesTests(unittest.TestCase):
                 {"question": "Sections?", "multiSelect": True},
             ]
         }
+        request = PendingRequest("AskUserQuestion", question, "digest")
+
+        def parse(reply):
+            line = json.dumps({"type": "answer", **request.reference, **reply})
+            return approvals.parse_reply(request, line)
+
         valid = {"Format?": "Custom text", "Sections?": ["Summary", "Details"]}
         self.assertEqual(
-            approvals.answer(question, {"answers": valid, "questions": []}),
+            parse({"answers": valid, "questions": []}).updated_input,
             {**question, "answers": valid},
         )
         self.assertEqual(
-            approvals.answer(question, {"response": "Use defaults"}),
+            parse({"response": "Use defaults"}).updated_input,
             {**question, "response": "Use defaults"},
         )
         for reply in (
+            {"answers": valid, "request_id": "stale"},
+            {"answers": valid, "input_sha256": "changed"},
+            {"type": "approval", "decision": "approve"},
+            {"decision": "skip", "message": {"reason": "invalid"}},
             {},
             {"answers": {"Format?": "JSON"}},
             {"answers": {**valid, "extra": "x"}},
@@ -300,7 +310,13 @@ class AdapterRulesTests(unittest.TestCase):
             {"response": "general", "answers": valid},
         ):
             with self.subTest(reply=reply), self.assertRaises(ValueError):
-                approvals.answer(question, reply)
+                parse(reply)
+        for line in (b"{", b"\xff", b"[]", b"null"):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                approvals.parse_reply(request, line)
+        self.assertEqual(parse({"decision": "skip"}).behavior, "deny")
+        self.assertIsNone(approvals.ending)
+        self.assertEqual(approvals.denials, [])
 
     def test_cli_context_bounds_and_timeout_alias(self):
         for value in ("100000", "1000000"):

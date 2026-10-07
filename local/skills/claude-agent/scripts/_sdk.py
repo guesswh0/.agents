@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -74,6 +75,22 @@ class InputLines:
         if self.active:
             self.loop.remove_reader(self.fd)
             self.active = False
+
+
+@dataclass(frozen=True)
+class PendingRequest:
+    tool_name: str
+    tool_input: dict
+    input_sha256: str
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    @property
+    def question(self):
+        return self.tool_name == "AskUserQuestion"
+
+    @property
+    def reference(self):
+        return {"request_id": self.request_id, "input_sha256": self.input_sha256}
 
 
 class Approvals:
@@ -155,98 +172,104 @@ class Approvals:
         self.ending = (status, reason)
         return self.deny(name, context, reason)
 
+    def parse_reply(self, request, line):
+        invalid = "Response must match the pending request type, ID, and input hash."
+        try:
+            reply = json.loads(line)
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError(invalid) from exc
+        reply_type = "answer" if request.question else "approval"
+        choices = (None, "skip") if request.question else ("approve", "deny")
+        if (
+            not isinstance(reply, dict)
+            or reply.get("type") != reply_type
+            or reply.get("request_id") != request.request_id
+            or reply.get("input_sha256") != request.input_sha256
+            or reply.get("decision") not in choices
+        ):
+            raise ValueError(invalid)
+        if reply.get("decision") in ("deny", "skip"):
+            reason = reply.get("message") or "The user declined this request."
+            if not isinstance(reason, str):
+                raise ValueError("Message must be text")
+            return self.sdk.PermissionResultDeny(message=reason)
+        updated = (
+            self.answer(request.tool_input, reply)
+            if request.question
+            else request.tool_input
+        )
+        return self.sdk.PermissionResultAllow(updated_input=updated)
+
+    def request_input(self, request, context):
+        metadata = {
+            key: getattr(context, key, None)
+            for key in (
+                "tool_use_id",
+                "display_name",
+                "description",
+                "decision_reason",
+                "blocked_path",
+                "agent_id",
+            )
+        }
+        emit(
+            self.job.base,
+            "question_required" if request.question else "approval_required",
+            **request.reference,
+            tool_name=request.tool_name,
+            title=getattr(context, "title", None) or request.tool_name,
+            tool_input=request.tool_input,
+            **metadata,
+        )
+
+    async def wait_for_reply(self, request):
+        while True:
+            line = await self.input.read()
+            if line is None:
+                return None
+            try:
+                return self.parse_reply(request, line)
+            except (KeyError, TypeError, ValueError) as exc:
+                emit(self.job.base, "control_error", error=str(exc))
+
+    def resolve(self, request, context, reply):
+        name = request.tool_name
+        if reply is None:
+            return self.end(
+                name, context, "denied", "User input closed before a response."
+            )
+        if reply.behavior == "deny":
+            if name == "Workflow":
+                return self.end(name, context, "denied", reply.message)
+            return self.deny(name, context, reply.message)
+        emit(
+            self.job.base,
+            "answer_accepted" if request.question else "approval_accepted",
+            **request.reference,
+        )
+        return reply
+
     async def decide(self, name, data, context):
         if self.ending:
             return self.deny(name, context, self.ending[1])
-        question = name == "AskUserQuestion"
         async with self.lock:
+            # a queued request may acquire the lock after the channel closes
             if self.ending:
                 return self.deny(name, context, self.ending[1])
             try:
                 snapshot, digest = self.snapshot(name, data)
             except (OSError, ValueError, UnicodeError) as exc:
                 return self.deny(name, context, str(exc))
-            request_id = str(uuid.uuid4())
+            request = PendingRequest(name, snapshot, digest)
             if self.input is None:
                 self.input = InputLines()
             self.clock.pause()
-            emit({}, WorkerEvent.INPUT_WAIT)
-            emit(
-                self.job.base,
-                "question_required" if question else "approval_required",
-                request_id=request_id,
-                input_sha256=digest,
-                tool_name=name,
-                tool_use_id=getattr(context, "tool_use_id", None),
-                title=getattr(context, "title", None) or name,
-                display_name=getattr(context, "display_name", None),
-                description=getattr(context, "description", None),
-                decision_reason=getattr(context, "decision_reason", None),
-                blocked_path=getattr(context, "blocked_path", None),
-                agent_id=getattr(context, "agent_id", None),
-                tool_input=snapshot,
-            )
             try:
+                emit({}, WorkerEvent.INPUT_WAIT)
+                self.request_input(request, context)
                 async with asyncio.timeout(self.job.input_timeout):
-                    while True:
-                        line = await self.input.read()
-                        if line is None:
-                            return self.end(
-                                name,
-                                context,
-                                "denied",
-                                "User input closed before a response.",
-                            )
-                        try:
-                            decision = json.loads(line)
-                            matches = (
-                                isinstance(decision, dict)
-                                and decision.get("type")
-                                == ("answer" if question else "approval")
-                                and decision.get("request_id") == request_id
-                                and decision.get("input_sha256") == digest
-                            )
-                        except (ValueError, UnicodeError):
-                            matches = False
-                        choices = (None, "skip") if question else ("approve", "deny")
-                        if not matches or decision.get("decision") not in choices:
-                            emit(
-                                self.job.base,
-                                "control_error",
-                                error="Response must match the pending request type, ID, and input hash.",
-                            )
-                            continue
-                        if decision.get("decision") in ("deny", "skip"):
-                            reason = (
-                                decision.get("message")
-                                or "The user declined this request."
-                            )
-                            if not isinstance(reason, str):
-                                emit(
-                                    self.job.base,
-                                    "control_error",
-                                    error="Message must be text",
-                                )
-                                continue
-                            if name == "Workflow":
-                                return self.end(name, context, "denied", reason)
-                            return self.deny(name, context, reason)
-                        try:
-                            updated = (
-                                self.answer(snapshot, decision)
-                                if question
-                                else snapshot
-                            )
-                        except (KeyError, TypeError, ValueError) as exc:
-                            emit(self.job.base, "control_error", error=str(exc))
-                            continue
-                        emit(
-                            self.job.base,
-                            "answer_accepted" if question else "approval_accepted",
-                            request_id=request_id,
-                            input_sha256=digest,
-                        )
-                        return self.sdk.PermissionResultAllow(updated_input=updated)
+                    reply = await self.wait_for_reply(request)
+                return self.resolve(request, context, reply)
             except TimeoutError:
                 return self.end(name, context, "timed_out", "User input wait expired.")
             except (OSError, ValueError) as exc:
