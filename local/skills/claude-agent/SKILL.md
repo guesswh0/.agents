@@ -1,6 +1,6 @@
 ---
 name: claude-agent
-description: "Use Claude Code as a second agent: delegate tasks, get an independent opinion, continue an existing session, or run a dynamic multi-agent workflow."
+description: "Use Claude Code with models such as Fable, Opus, and Sonnet as a second agent: delegate tasks, get an independent opinion, continue an existing session, or run a dynamic multi-agent workflow."
 ---
 
 # Claude Agent
